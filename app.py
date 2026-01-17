@@ -1,5 +1,4 @@
 import streamlit as st
-from dotenv import load_dotenv
 from openai import OpenAI
 import instructor
 from pydantic import BaseModel
@@ -9,9 +8,7 @@ from audiorecorder import audiorecorder
 from qdrant_client import QdrantClient
 from qdrant_client.models import PointStruct, VectorParams, Distance
 import pandas as pd
-import os
 
-load_dotenv()
 
 #############
 # CONSTANTS #
@@ -858,9 +855,39 @@ with search_translation:
     search = st.button('Search Translation', use_container_width=True)
     
     if search:
-        with st.container(border=True):
+        df_results = list_translations(query)
+        
+        if df_results.empty:
+            st.info("No translations found locally.")
+        else:
             st.header('Saved Translations')
-            st.dataframe(list_translations(query), hide_index=True)
+            
+            for index, row in df_results.iterrows():
+                with st.container(border=True):
+                    
+                    col_top_1, col_top_2 = st.columns([0.8, 0.2])
+                    with col_top_1:
+
+                        try:
+                            src = row["Provided Input's Language"]
+                        except KeyError:
+                            src = row["Input Text Language"]
+                            
+                        tgt = row['Translation Language']
+                        st.subheader(f"{src} -> {tgt}")
+                        
+                    with col_top_2:
+                        if 'Similarity' in row:
+                            st.caption(f"Match: {row['Similarity']}")
+
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        st.markdown("**Original Text:**")
+                        st.info(row['Provided Input'] if 'Provided Input' in row else row['Input Text'])
+                    
+                    with c2:
+                        st.markdown("**Translation:**")
+                        st.success(row['Translation'])
 
 
 # Search correction #
@@ -869,6 +896,37 @@ with search_correction:
     search = st.button('Search Correction', use_container_width=True)
     
     if search:
-        with st.container(border=True):
+        df_results = list_corrections(query)
+        
+        if df_results.empty:
+            st.info("No corrections found locally.")
+        else:
             st.header('Saved Corrections')
-            st.dataframe(list_corrections(query), hide_index=True)
+            
+            for index, row in df_results.iterrows():
+                with st.container(border=True):
+                    
+                    col_top_1, col_top_2 = st.columns([0.8, 0.2])
+                    with col_top_1:
+                        st.subheader(row['Provided Input\'s Language'])
+                    with col_top_2:
+                        if 'Similarity' in row:
+                            st.caption(f"Match: {row['Similarity']}")
+
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        st.markdown("**Original Input:**")
+                        st.error(row['Provided Input'])
+                    
+                    with c2:
+                        st.markdown("**Corrected:**")
+                        st.success(row['Correction'])
+
+                    with st.expander("View Explanations"):
+                        st.markdown("**Difficult Words**")
+                        st.write(row['Difficult Words'])
+                        
+                        st.divider()
+                        
+                        st.markdown("**Grammar Rules**")
+                        st.write(row['Grammar Rules'])
