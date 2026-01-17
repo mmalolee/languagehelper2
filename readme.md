@@ -2,7 +2,7 @@
 
 ## Project Description
 
-A Streamlit app for language practice: translate text or audio, correct sentences (with explanations and pronunciation), and save everything to a local Qdrant vector store for fast, semantic search. The app uses **OpenAI** for detection, correction, **TTS/STT**, **Langfuse** for observability, and **Qdrant** for storage and retrieval.
+A Streamlit app for language practice: translate text or audio, correct sentences (with explanations and pronunciation), and save everything to a local Qdrant vector store for fast, semantic search. The app uses **OpenAI** for detection, correction, **TTS/STT**, and **Qdrant** for storage and retrieval.
 
 ## Features
 
@@ -16,22 +16,20 @@ A Streamlit app for language practice: translate text or audio, correct sentence
     - Record in-app, transcribe, check and correct, get explanations, and listen to the corrected sentence.
 - Save & Search:
     - Save translations and corrections; browse the latest items or run semantic search over saved content.
-- Observability with Langfuse:
 
 ## Technologies
 
 - `streamlit` - web app
 - `pydub` - works with audio files (requires system package: **ffmpeg**)
-- `openai` - GPT-4o (reasoning), whisper-1 (STT), tts-1 (TTS),embeddings
+- `openai` - GPT-4o (reasoning), whisper-1 (STT), tts-1 (TTS), embeddings
 - `instructor` + `pydantic` — structured outputs (typed responses for detection/corrections)
-- `qdrant-client` - stores and searches translations and corrections,
-- `dotenv` — local environment variables
-- `langfuse` — tracing/observability
+- `qdrant-client` - stores and searches translations and corrections
+- `pandas` - handling dataframes for search results
 - `audiorecorder` — simple mic recording in Streamlit
 
 ## Project Structure
 
-- language_helper
+- language_helper2
     - images
         - api_key.PNG
         - correct_speech_success.PNG
@@ -48,15 +46,10 @@ A Streamlit app for language practice: translate text or audio, correct sentence
         - translate_text.PNG
         - translations_no_query.PNG
         - translations_with_query.PNG
-    - *.env*
     - app.py
     - packages.txt
     - readme.md
     - requirements.txt
-
-## Running the Application (Streamlit Community Cloud)
-
-The app has been deployed using Streamlit Community Cloud: [Click here and try](https://languagelper.streamlit.app/)
 
 ## Running the Application (local)
 
@@ -69,12 +62,6 @@ The app has been deployed using Streamlit Community Cloud: [Click here and try](
     - `cd path_to_project_folder`
     - `pip install -r packages.txt`
     - `pip install -r requirements.txt`
-- Create *.env* file and add:
-    - LANGFUSE_SECRET_KEY=your_langfuse_secret
-    - LANGFUSE_PUBLIC_KEY=your_langfuse_public
-    - LANGFUSE_HOST=https://cloud.langfuse.com
-- Comment the `SECRETS` section.
-- Save.
 - Run the app by `streamlit run app.py`.
 
 ## How to Use the App
@@ -157,12 +144,6 @@ This allows the app to return translations or corrections that are most semantic
 
 **Notes on Secrets & Keys**
 - **OpenAI API Key**: entered in the app UI and held in `st.session_state` only.
-- **Langfuse**: read from `.env` locally or from Streamlit Secrets in the cloud.
-
-**Possible Improvements**
-- Switch Qdrant from `:memory:` to a hosted instance for persistent storage.
-- Export saved items to Markdown/PDF.
-- Provide custom languages inputs.
 
 **Requirements**
 - pacgages.txt:
@@ -170,10 +151,9 @@ This allows the app to return translations or corrections that are most semantic
 - requirements.txt:
     - streamlit
     - openai
-    - langfuse
     - instructor
     - pydantic
     - pydub
     - qdrant-client
-    - python-dotenv
-    - streamlit-audiorecorder
+    - audiorecorder
+    - pandas
