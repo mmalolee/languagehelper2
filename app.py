@@ -6,34 +6,12 @@ from pydantic import BaseModel
 from io import BytesIO
 from pydub import AudioSegment
 from audiorecorder import audiorecorder
-import langfuse
-from langfuse.openai import OpenAI as LFOpenAI
 from qdrant_client import QdrantClient
 from qdrant_client.models import PointStruct, VectorParams, Distance
 import pandas as pd
 import os
 
-
 load_dotenv()
-
-
-lf_secret_key = os.getenv('LANGFUSE_SECRET_KEY')
-lf_public_key = os.getenv('LANGFUSE_PUBLIC_KEY')
-lf_host = os.getenv('LANGFUSE_HOST')
-
-###########
-# SECRETS #
-###########
-
-# if 'LANGFUSE_SECRET_KEY' in st.secrets:
-#     lf_secret_key = st.secrets('LANGFUSE_SECRET_KEY')
-
-# if 'LANGFUSE_PUBLIC_KEY' in st.secrets:
-#     lf_public_key = st.secrets('LANGFUSE_PUBLIC_KEY')
-
-# if 'LANGFUSE_HOST' in st.secrets:
-#     lf_host = st.secrets('LANGFUSE_HOST')
-
 
 #############
 # CONSTANTS #
@@ -51,9 +29,9 @@ LANGUAGES_INPUT = sorted(['English', 'German', 'Italian', 'Spanish', 'Czech', 'P
 LANGUAGES_OUTPUT = sorted(['English', 'German', 'Italian', 'Spanish', 'Czech', 'Polish'])
 
 
-#############################
-# OPENAI AND LANGFUSE KEYS #
-#############################
+#################
+# OPENAI CLIENT #
+#################
 
 @st.cache_resource
 def get_openai_client():
@@ -61,18 +39,8 @@ def get_openai_client():
 
 
 @st.cache_resource
-def get_langfuse_openai_client():
-    return LFOpenAI(api_key=st.session_state['OPENAI_API_KEY'])
-
-
-@st.cache_resource
 def get_instructor_openai_client():
     return instructor.from_openai(get_openai_client())
-
-
-@st.cache_resource
-def get_langfuse_instructor_openai_client():
-    return instructor.from_openai(get_langfuse_openai_client())
 
 
 ##############
@@ -131,14 +99,13 @@ def get_audio_bytes_from_speech(speech):
     return raw_bytes
 
 
-@langfuse.observe()
 def translate_text(text, language_input, language_output):
-    openai_lf_client = get_langfuse_openai_client()
+    # Używamy standardowego klienta OpenAI zamiast Langfuse
+    openai_client = get_openai_client()
 
-    translation = openai_lf_client.chat.completions.create(
+    translation = openai_client.chat.completions.create(
         model=MODEL,
         temperature=0,
-        name='get_translation_from_text',
         messages=
         [
             {
@@ -156,15 +123,14 @@ def translate_text(text, language_input, language_output):
     return translation.choices[0].message.content
 
 
-@langfuse.observe()
 def check_language(to_check):
-    instructor_lf_openai_client = get_langfuse_instructor_openai_client()
+    # Używamy standardowego klienta Instructor zamiast Langfuse
+    instructor_openai_client = get_instructor_openai_client()
 
-    response = instructor_lf_openai_client.chat.completions.create(
+    response = instructor_openai_client.chat.completions.create(
         model=MODEL,
         temperature=0,
         response_model=CheckLanguage,
-        name='language_detection',
         messages=
         [
             {
@@ -181,15 +147,13 @@ def check_language(to_check):
     return response.language_detected
 
 
-@langfuse.observe()
 def check_grammar(to_check, input_language):
-    instructor_lf_openai_client = get_langfuse_instructor_openai_client()
+    instructor_openai_client = get_instructor_openai_client()
 
-    response = instructor_lf_openai_client.chat.completions.create(
+    response = instructor_openai_client.chat.completions.create(
         model=MODEL,
         temperature=0,
         response_model=CheckGrammar,
-        name='checking_grammar',
         messages=
         [
             {
@@ -204,15 +168,13 @@ def check_grammar(to_check, input_language):
     return response.is_correct
 
 
-@langfuse.observe()
 def get_corr_words_and_grammar(to_correct, input_language):
-    instructor_lf_openai_client = get_langfuse_instructor_openai_client()
+    instructor_openai_client = get_instructor_openai_client()
 
-    explanation = instructor_lf_openai_client.chat.completions.create(
+    explanation = instructor_openai_client.chat.completions.create(
         model=MODEL,
         temperature=0,
         response_model=Explanation,
-        name='correction_words_grammar',
         messages=
         [
             {
@@ -252,7 +214,7 @@ def text_to_speech(text):
 
 
 def speech_to_text(speech):
-    openai_client = get_instructor_openai_client()
+    openai_client = get_openai_client() # Zmieniono na standardowego klienta, whisper nie wymaga instructora
 
     speech_file_like = BytesIO(speech)
     speech_file_like.name='audio.mp3'
@@ -266,14 +228,12 @@ def speech_to_text(speech):
     return transcription.text
 
 
-@langfuse.observe()
 def translate_transcription(transcription, output_language):
-    instructor_lf_openai_client = get_langfuse_instructor_openai_client()
-    translation = instructor_lf_openai_client.chat.completions.create(
+    instructor_openai_client = get_instructor_openai_client()
+    translation = instructor_openai_client.chat.completions.create(
         model=MODEL,
         temperature=0,
         response_model=AudioTranslationAndLanguage,
-        name='translate_transcription',
         messages=
         [
             {

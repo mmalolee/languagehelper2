@@ -2,7 +2,6 @@ openai
 python-dotenv
 instructor
 qdrant-client
-langfuse
 pandas
 streamlit
 streamlit-audiorecorder
