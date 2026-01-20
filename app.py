@@ -1,7 +1,7 @@
 import streamlit as st
 from openai import OpenAI
 import instructor
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from io import BytesIO
 from pydub import AudioSegment
 from audiorecorder import audiorecorder
@@ -20,7 +20,7 @@ st.markdown(
     """
     <style>
         .block-container {
-            max-width: 95%;
+            max-width: 60%;
             padding-top: 1rem;
             padding-right: 1rem;
             padding-left: 1rem;
@@ -42,29 +42,14 @@ st.markdown(
             margin-left: 10px;
             border: 1px solid #d6d6d6;
         }
-
-        /* STYL FISZKI - CZYSTY UKŁAD BEZ RAMKI */
-        .flashcard-container {
-            padding: 20px 0;
-            text-align: center;
-            min-height: 150px;
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-            align-items: center;
-        }
         
-        .flashcard-question {
-            font-size: 2.5em;
-            font-weight: bold;
-            margin-bottom: 10px;
-        }
-        
-        .flashcard-answer {
-            font-size: 2em;
-            color: #4CAF50;
-            margin-top: 20px;
-            margin-bottom: 20px;
+        .alternatives-box {
+            margin-top: 15px;
+            padding: 10px;
+            border-top: 1px solid #333;
+            font-size: 0.9em;
+            color: #888;
+            font-style: italic;
         }
     </style>
 """,
@@ -137,6 +122,13 @@ class AudioTranslationAndLanguage(BaseModel):
 
 class CheckLanguage(BaseModel):
     language_detected: str
+
+
+class VerifiedSynonyms(BaseModel):
+    synonyms: list[str] = Field(
+        ...,
+        description="List of words from the candidates that are actual synonyms or close alternatives.",
+    )
 
 
 #################################
@@ -623,28 +615,79 @@ def get_quiz_data(lang1, lang2):
         text_in = p.payload.get("Input_Text", "")
         text_out = p.payload.get("Translation", "")
 
-        # Pobieramy pary pasujące do wybranych języków
         if {p_in, p_out} == target_langs or (
             p_in in target_langs and p_out in target_langs
         ):
             if len(text_in.split()) <= 4:
-                # 1. Kierunek oryginalny z bazy
                 candidates.append(
                     {
                         "question": text_in,
                         "answer": text_out,
                         "direction": f"{p_in} -> {p_out}",
+                        "target_lang": p_out,
                     }
                 )
-                # 2. Kierunek odwrotny
                 candidates.append(
                     {
                         "question": text_out,
                         "answer": text_in,
                         "direction": f"{p_out} -> {p_in}",
+                        "target_lang": p_in,
                     }
                 )
     return candidates
+
+
+# --- FUNKCJA WERYFIKACJI ALTERNATYW ---
+def get_semantic_alternatives(target_text, target_lang):
+    client = get_qdrant_client()
+
+    # Pobieramy wektory bliskie target_text
+    search_result = client.search(
+        collection_name="translations",
+        query_vector=("Input_Vector", get_embedding(target_text)),
+        score_threshold=0.70,
+        limit=15,
+    )
+
+    raw_candidates = set()
+    for r in search_result:
+        payload = r.payload
+        # Sprawdzamy czy Input_Text pasuje językowo
+        if payload.get("Input_Text_Language") == target_lang:
+            word = payload.get("Input_Text", "").strip()
+            if word.lower() != target_text.lower().strip():
+                raw_candidates.add(word)
+        # Sprawdzamy czy Translation pasuje językowo
+        if payload.get("Translation_Language") == target_lang:
+            word = payload.get("Translation", "").strip()
+            if word.lower() != target_text.lower().strip():
+                raw_candidates.add(word)
+
+    candidates_list = list(raw_candidates)
+    if not candidates_list:
+        return []
+
+    try:
+        instructor_client = get_instructor_openai_client()
+        response = instructor_client.chat.completions.create(
+            model=MODEL,
+            temperature=0,
+            response_model=VerifiedSynonyms,
+            messages=[
+                {
+                    "role": "system",
+                    "content": f"You are a lexicographer for {target_lang}. Given a target word and a list of candidates, return ONLY those candidates that are valid synonyms or very close semantic alternatives. Ignore typos or unrelated words. If none match, return an empty list.",
+                },
+                {
+                    "role": "user",
+                    "content": f"Target Word: {target_text}\nLanguage: {target_lang}\nCandidates: {candidates_list}",
+                },
+            ],
+        )
+        return response.synonyms
+    except Exception:
+        return []
 
 
 ##################
@@ -693,6 +736,7 @@ keys = [
     "flashcards_data",
     "flashcard_revealed",
     "flashcard_score",
+    "quiz_alternatives",
 ]
 
 for k in keys:
@@ -705,6 +749,7 @@ for k in keys:
             or "results" in k
             or "questions" in k
             or "data" in k
+            or "alternatives" in k
         ):
             st.session_state[k] = []
         elif "index" in k or "score" in k or "idx" in k:
@@ -742,8 +787,8 @@ assure_qdrant_collections_exist()
     speech_cor,
     quiz_tab,
     search_tr,
-    search_cor,
     search_aud,
+    search_cor,
 ) = st.tabs(
     [
         "Translate Text",
@@ -752,8 +797,8 @@ assure_qdrant_collections_exist()
         "Record & Correct",
         "Vocabulary Quiz",
         "Search Translations",
+        "Search Audio Translations",
         "Search Corrections",
-        "Search Audio",
     ]
 )
 
@@ -1110,7 +1155,7 @@ with speech_cor:
         else:
             st.warning("No Correction to Save")
 
-# 5. Quiz Tab (MERGED FLASHCARDS + QUIZ)
+# 5. Quiz Tab (MERGED FLASHCARDS + QUIZ + SEMANTIC ALTS)
 with quiz_tab:
     st.header("Vocabulary & Flashcards")
 
@@ -1124,59 +1169,84 @@ with quiz_tab:
         with c2:
             q_lang2 = st.selectbox("Language 2", LANGUAGES_OUTPUT, key="q_lang2")
 
-        # Opcje trybu: Quiz (pisanie), Quiz (wybór), Fiszki (samoocena)
-        quiz_mode = st.radio(
-            "Select Mode",
-            ["Written Answer", "Select Translation", "Flashcards"],
-            horizontal=True,
-        )
+        candidates = get_quiz_data(q_lang1, q_lang2)
+        count = len(candidates)
+
+        # Pasek z trybem i ewentualnym sukcesem (zielony pasek)
+        c_mode, c_stat = st.columns([0.6, 0.4])
+        with c_mode:
+            quiz_mode = st.radio(
+                "Select Mode",
+                ["Written Answer", "Select Translation", "Flashcards"],
+                horizontal=True,
+            )
+        with c_stat:
+            st.write("")  # Spacer
+            # Custom CSS dla paska (zielony lub żółty), wyrównany do radio buttons
+            color = "#4CAF50" if count >= 3 else "#FFC107"
+            bg = "rgba(76, 175, 80, 0.1)" if count >= 3 else "rgba(255, 193, 7, 0.1)"
+            text = (
+                f"Found {count} items."
+                if count >= 3
+                else f"Not enough items ({count}). Need 3+."
+            )
+
+            st.markdown(
+                f"""
+                <div style="
+                    background-color: {bg}; 
+                    color: {color}; 
+                    padding: 8px 15px; 
+                    border-radius: 5px; 
+                    border: 1px solid {color}; 
+                    text-align: center; 
+                    margin-top: 28px;
+                    font-weight: bold;
+                ">
+                    {text}
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
         if q_lang1 == q_lang2:
             st.error("Please select two different languages.")
-        else:
-            candidates = get_quiz_data(q_lang1, q_lang2)
-            count = len(candidates)
-            if count < 3:
-                st.warning(f"Not enough items ({count}). You need at least 3 phrases.")
-            else:
-                st.success(f"Found {count} items.")
-                num_q = st.slider(
-                    "Select number of items", 1, min(count, 20), min(count, 5)
-                )
+        elif count >= 3:
+            num_q = st.slider(
+                "Select number of items", 1, min(count, 20), min(count, 5)
+            )
 
-                if st.button("Start", use_container_width=True):
-                    selected = random.sample(candidates, num_q)
+            if st.button("Start", use_container_width=True):
+                selected = random.sample(candidates, num_q)
 
-                    if quiz_mode == "Select Translation":
-                        for item in selected:
-                            same_dir_candidates = [
-                                c
-                                for c in candidates
-                                if c["direction"] == item["direction"]
-                            ]
-                            other = [
-                                c["answer"]
-                                for c in same_dir_candidates
-                                if c["answer"] != item["answer"]
-                            ]
-                            pool_size = len(other)
-                            distractors = random.sample(other, min(3, pool_size))
-                            options = distractors + [item["answer"]]
-                            random.shuffle(options)
-                            item["options"] = options
+                if quiz_mode == "Select Translation":
+                    for item in selected:
+                        same_dir_candidates = [
+                            c for c in candidates if c["direction"] == item["direction"]
+                        ]
+                        other = [
+                            c["answer"]
+                            for c in same_dir_candidates
+                            if c["answer"] != item["answer"]
+                        ]
+                        pool_size = len(other)
+                        distractors = random.sample(other, min(3, pool_size))
+                        options = distractors + [item["answer"]]
+                        random.shuffle(options)
+                        item["options"] = options
 
-                    st.session_state["quiz_questions"] = selected
-                    st.session_state["quiz_mode"] = quiz_mode
-                    st.session_state["quiz_current_index"] = 0
-                    st.session_state["quiz_score"] = 0
-                    st.session_state["quiz_active"] = True
-                    st.session_state["quiz_submitted"] = False
+                st.session_state["quiz_questions"] = selected
+                st.session_state["quiz_mode"] = quiz_mode
+                st.session_state["quiz_current_index"] = 0
+                st.session_state["quiz_score"] = 0
+                st.session_state["quiz_active"] = True
+                st.session_state["quiz_submitted"] = False
 
-                    if quiz_mode == "Flashcards":
-                        st.session_state["flashcard_revealed"] = False
-                        st.session_state["flashcard_score"] = 0
+                if quiz_mode == "Flashcards":
+                    st.session_state["flashcard_revealed"] = False
+                    st.session_state["flashcard_score"] = 0
 
-                    st.rerun()
+                st.rerun()
 
     # --- ACTIVE SESSION ---
     elif st.session_state.get("quiz_active", False):
@@ -1190,42 +1260,38 @@ with quiz_tab:
 
         # --- LOGIKA FISZEK (FLASHCARDS) ---
         if mode == "Flashcards":
-            # Używamy kontenera bez ramki (border=False, domyślny)
-            with st.container():
+            with st.container(border=True):
                 st.caption(f"Translate to: {current['direction'].split(' -> ')[1]}")
-                st.markdown(f"## {current['question']}")
+                st.markdown(
+                    f"<h2 style='text-align: center;'>{current['question']}</h2>",
+                    unsafe_allow_html=True,
+                )
 
                 if st.session_state["flashcard_revealed"]:
                     st.divider()
-                    st.markdown(f"## {current['answer']}")
+                    st.markdown(
+                        f"<h2 style='text-align: center; color: #4CAF50;'>{current['answer']}</h2>",
+                        unsafe_allow_html=True,
+                    )
 
-                    # 1. Pasek z Audio i Exit (w jednej linii)
-                    c_aud, c_ex = st.columns([0.7, 0.3])
-                    with c_aud:
-                        st.audio(text_to_speech(current["answer"]), format="audio/mpeg")
-                    with c_ex:
-                        if st.button(
-                            "Exit", key=f"fc_exit_{idx}", use_container_width=True
-                        ):
-                            st.session_state["quiz_active"] = False
-                            st.session_state["quiz_finished_final"] = (
-                                True  # Lub reset całkowity
-                            )
-                            st.rerun()
+                    st.audio(text_to_speech(current["answer"]), format="audio/mpeg")
+
+                    # --- SEMANTYCZNE ALTERNATYWY ---
+                    with st.spinner("Checking for synonyms..."):
+                        alts = get_semantic_alternatives(
+                            current["answer"], current["target_lang"]
+                        )
+                        if alts:
+                            st.info(f"💡 Also correct: {', '.join(alts)}")
 
             if not st.session_state["flashcard_revealed"]:
-                if st.button(
-                    "Reveal Answer", use_container_width=True
-                ):  # Usunięto emoji
+                if st.button("Reveal Answer", use_container_width=True):
                     st.session_state["flashcard_revealed"] = True
                     st.rerun()
             else:
-                # 2. Pasek z oceną (poniżej audio/exit)
                 c_know, c_dontknow = st.columns(2)
                 with c_know:
-                    if st.button(
-                        "I knew it", use_container_width=True
-                    ):  # Usunięto emoji
+                    if st.button("I knew it", use_container_width=True):
                         st.session_state["flashcard_score"] += 1
                         if idx < len(questions) - 1:
                             st.session_state["quiz_current_index"] += 1
@@ -1239,9 +1305,7 @@ with quiz_tab:
                             st.session_state["quiz_finished_final"] = True
                             st.rerun()
                 with c_dontknow:
-                    if st.button(
-                        "Didn't know", use_container_width=True
-                    ):  # Usunięto emoji
+                    if st.button("Didn't know", use_container_width=True):
                         if idx < len(questions) - 1:
                             st.session_state["quiz_current_index"] += 1
                             st.session_state["flashcard_revealed"] = False
@@ -1254,23 +1318,20 @@ with quiz_tab:
                             st.session_state["quiz_finished_final"] = True
                             st.rerun()
 
-            # Przycisk Exit dostępny też przed odsłonięciem
-            if not st.session_state["flashcard_revealed"]:
-                if st.button("Exit", type="secondary"):
-                    st.session_state["quiz_active"] = False
-                    st.rerun()
+            # Przycisk Exit dostępny zawsze na dole
+            st.divider()
+            if st.button("Exit Quiz", type="secondary", use_container_width=True):
+                st.session_state["quiz_active"] = False
+                st.rerun()
 
         # --- LOGIKA QUIZU (WRITTEN / SELECT) ---
         else:
             with st.container(border=True):
-                st.caption(f"Translate: {current['direction']}")
+                st.caption(f"Translate to: {current['direction'].split(' -> ')[1]}")
                 st.subheader(f"'{current['question']}'")
 
-                if st.button("Listen to Question", key=f"q_audio_{idx}"):
-                    with st.spinner("Generating..."):
-                        st.audio(
-                            text_to_speech(current["question"]), format="audio/mpeg"
-                        )
+                # Audio Pytania (u góry)
+                st.audio(text_to_speech(current["question"]), format="audio/mpeg")
 
                 if mode == "Written Answer":
                     user_ans = st.text_input(
@@ -1278,7 +1339,7 @@ with quiz_tab:
                         key=f"input_q_{idx}",
                         disabled=st.session_state["quiz_submitted"],
                     )
-                else:  # Select Translation
+                else:
                     user_ans = st.radio(
                         "Choose correct translation:",
                         current["options"],
@@ -1291,19 +1352,45 @@ with quiz_tab:
                         st.session_state["quiz_submitted"] = True
                         st.rerun()
                 else:
-                    is_correct = (
-                        user_ans.strip().lower() == current["answer"].strip().lower()
-                    )
+                    is_correct = False
+                    # Sprawdzanie dokładne
+                    if user_ans.strip().lower() == current["answer"].strip().lower():
+                        is_correct = True
+                    # Sprawdzanie synonimów (tylko w written)
+                    elif mode == "Written Answer":
+                        with st.spinner("Checking synonyms..."):
+                            synonyms = get_semantic_alternatives(
+                                current["answer"], current["target_lang"]
+                            )
+                            synonyms_lower = [s.lower() for s in synonyms]
+                            if user_ans.strip().lower() in synonyms_lower:
+                                is_correct = True
+                                st.success(
+                                    f"Correct! The primary answer is '{current['answer']}', but you used a valid synonym."
+                                )
+
                     if is_correct:
-                        st.success(f"Correct. Answer: {current['answer']}")
                         if f"scored_{idx}" not in st.session_state:
                             st.session_state["quiz_score"] += 1
                             st.session_state[f"scored_{idx}"] = True
+                        if (
+                            user_ans.strip().lower()
+                            == current["answer"].strip().lower()
+                        ):
+                            st.success(f"Correct. Answer: {current['answer']}")
                     else:
                         st.error(f"Incorrect. Answer: {current['answer']}")
+                        with st.spinner("Checking DB for alternatives..."):
+                            alts = get_semantic_alternatives(
+                                current["answer"], current["target_lang"]
+                            )
+                            if alts:
+                                st.info(
+                                    f"💡 Valid alternatives found in DB: {', '.join(alts)}"
+                                )
 
-                    if st.button("Listen to Answer", key=f"ans_audio_{idx}"):
-                        st.audio(text_to_speech(current["answer"]), format="audio/mpeg")
+                    # Audio Odpowiedzi
+                    st.audio(text_to_speech(current["answer"]), format="audio/mpeg")
 
                     if idx + 1 < len(questions):
                         if st.button("Next Question", use_container_width=True):
@@ -1316,7 +1403,8 @@ with quiz_tab:
                             st.session_state["quiz_finished_final"] = True
                             st.rerun()
 
-            if st.button("Exit Quiz", type="secondary"):
+            st.divider()
+            if st.button("Exit Quiz", type="secondary", use_container_width=True):
                 st.session_state["quiz_active"] = False
                 st.rerun()
 
