@@ -42,6 +42,20 @@ st.markdown(
             margin-left: 10px;
             border: 1px solid #d6d6d6;
         }
+
+        .flashcard-container {
+            padding: 40px;
+            border: 2px solid #e0e0e0;
+            border-radius: 15px;
+            background-color: #ffffff;
+            margin-bottom: 20px;
+            text-align: center;
+            min-height: 250px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+        }
     </style>
 """,
     unsafe_allow_html=True,
@@ -586,20 +600,38 @@ def list_audio_translations(query=None):
         )
 
 
-def get_quiz_data(input_lang, output_lang):
+def get_quiz_data(lang1, lang2):
     client = get_qdrant_client()
     points, _ = client.scroll(collection_name="translations", limit=1000)
     candidates = []
+
+    target_langs = {lang1, lang2}
+
     for p in points:
-        if len(p.payload.get("Input_Text", "").split()) <= 4:
-            if (
-                p.payload.get("Input_Text_Language") == input_lang
-                and p.payload.get("Translation_Language") == output_lang
-            ):
+        p_in = p.payload.get("Input_Text_Language")
+        p_out = p.payload.get("Translation_Language")
+        text_in = p.payload.get("Input_Text", "")
+        text_out = p.payload.get("Translation", "")
+
+        # Pobieramy pary pasujące do wybranych języków
+        if {p_in, p_out} == target_langs or (
+            p_in in target_langs and p_out in target_langs
+        ):
+            if len(text_in.split()) <= 4:
+                # 1. Kierunek oryginalny z bazy
                 candidates.append(
                     {
-                        "question": p.payload.get("Input_Text"),
-                        "answer": p.payload.get("Translation"),
+                        "question": text_in,
+                        "answer": text_out,
+                        "direction": f"{p_in} -> {p_out}",
+                    }
+                )
+                # 2. Kierunek odwrotny
+                candidates.append(
+                    {
+                        "question": text_out,
+                        "answer": text_in,
+                        "direction": f"{p_out} -> {p_in}",
                     }
                 )
     return candidates
@@ -647,17 +679,27 @@ keys = [
     "cached_cor_results",
     "cached_audio_results",
     "search_tr_mode",
+    "flashcard_idx",
+    "flashcards_data",
+    "flashcard_revealed",
+    "flashcard_score",
 ]
 
 for k in keys:
     if k not in st.session_state:
         if "audio" in k:
             st.session_state[k] = None
-        elif "list" in k or "words" in k or "results" in k or "questions" in k:
+        elif (
+            "list" in k
+            or "words" in k
+            or "results" in k
+            or "questions" in k
+            or "data" in k
+        ):
             st.session_state[k] = []
-        elif "index" in k or "score" in k:
+        elif "index" in k or "score" in k or "idx" in k:
             st.session_state[k] = 0
-        elif "active" in k or "submitted" in k or "finished" in k:
+        elif "active" in k or "submitted" in k or "finished" in k or "revealed" in k:
             st.session_state[k] = False
         else:
             st.session_state[k] = ""
@@ -689,19 +731,21 @@ assure_qdrant_collections_exist()
     text_cor,
     speech_cor,
     quiz_tab,
-    search_translation,
-    search_correction,
-    search_audio,
+    flashcards_tab,
+    search_tr,
+    search_cor,
+    search_aud,
 ) = st.tabs(
     [
         "Translate Text",
         "Translate Audio",
         "Correct Text",
-        "Record and Correct Speech",
+        "Record & Correct",
         "Vocabulary Quiz",
-        "Search Translation",
-        "Search Correction",
-        "Search Audio Translations",
+        "Flashcards",
+        "Search Translations",
+        "Search Corrections",
+        "Search Audio",
     ]
 )
 
@@ -885,7 +929,6 @@ with text_cor:
                             st.session_state["CT_input_language"],
                         )
                     )
-
                     st.session_state["CT_raw_diff_words"] = diff_words
                     words_expl = (
                         "".join(
@@ -1061,26 +1104,26 @@ with speech_cor:
 
 # 5. Quiz Tab
 with quiz_tab:
-    st.header("Vocabulary Quiz")
+    st.header("Vocabulary & Phrase Quiz")
     if not st.session_state.get("quiz_active", False) and not st.session_state.get(
         "quiz_finished_final", False
     ):
         st.subheader("Quiz Settings")
         c1, c2 = st.columns(2)
         with c1:
-            q_src = st.selectbox("From Language", LANGUAGES_INPUT, key="q_lang_in")
+            q_lang1 = st.selectbox("Language 1", LANGUAGES_INPUT, key="q_lang1")
         with c2:
-            q_tgt = st.selectbox("To Language", LANGUAGES_OUTPUT, key="q_lang_out")
+            q_lang2 = st.selectbox("Language 2", LANGUAGES_OUTPUT, key="q_lang2")
         quiz_mode = st.radio(
             "Select Quiz Mode",
             ["Written Answer", "Select Translation"],
             horizontal=True,
         )
 
-        if q_src == q_tgt:
-            st.error("Source and Target languages must be different.")
+        if q_lang1 == q_lang2:
+            st.error("Please select two different languages.")
         else:
-            candidates = get_quiz_data(q_src, q_tgt)
+            candidates = get_quiz_data(q_lang1, q_lang2)
             count = len(candidates)
             if count < 5:
                 st.warning(
@@ -1095,12 +1138,18 @@ with quiz_tab:
                     selected = random.sample(candidates, num_q)
                     if quiz_mode == "Select Translation":
                         for item in selected:
+                            same_dir_candidates = [
+                                c
+                                for c in candidates
+                                if c["direction"] == item["direction"]
+                            ]
                             other = [
                                 c["answer"]
-                                for c in candidates
+                                for c in same_dir_candidates
                                 if c["answer"] != item["answer"]
                             ]
-                            distractors = random.sample(other, min(3, len(other)))
+                            pool_size = len(other)
+                            distractors = random.sample(other, min(3, pool_size))
                             options = distractors + [item["answer"]]
                             random.shuffle(options)
                             item["options"] = options
@@ -1121,7 +1170,8 @@ with quiz_tab:
         st.progress((idx) / len(questions))
 
         with st.container(border=True):
-            st.subheader(f"How do you translate: '{current['question']}'?")
+            st.caption(f"Translate: {current['direction']}")
+            st.subheader(f"'{current['question']}'")
             if st.button("Listen to Question", key=f"q_audio_{idx}"):
                 with st.spinner("Generating..."):
                     st.audio(text_to_speech(current["question"]), format="audio/mpeg")
@@ -1184,8 +1234,103 @@ with quiz_tab:
                     del st.session_state[key]
             st.rerun()
 
-# 6. Search Translation (Dynamic Layout + Score)
-with search_translation:
+# 6. Flashcards Tab (MODIFIED: REVEAL & SELF-ASSESS)
+with flashcards_tab:
+    st.header("Flashcards Mode")
+
+    if not st.session_state.get("flashcards_data"):
+        c1, c2 = st.columns(2)
+        with c1:
+            f_lang1 = st.selectbox("Language 1", LANGUAGES_INPUT, key="f_lang1")
+        with c2:
+            f_lang2 = st.selectbox("Language 2", LANGUAGES_OUTPUT, key="f_lang2")
+
+        if st.button("Load Flashcards", use_container_width=True):
+            data = get_quiz_data(f_lang1, f_lang2)
+            if not data:
+                st.warning("No flashcards found for these languages.")
+            else:
+                random.shuffle(data)
+                st.session_state["flashcards_data"] = data
+                st.session_state["flashcard_idx"] = 0
+                st.session_state["flashcard_revealed"] = False
+                st.session_state["flashcard_score"] = 0
+                st.rerun()
+
+    else:
+        idx = st.session_state["flashcard_idx"]
+        total = len(st.session_state["flashcards_data"])
+        card = st.session_state["flashcards_data"][idx]
+
+        st.progress((idx + 1) / total)
+        st.caption(
+            f"Card {idx + 1} of {total} | Score: {st.session_state['flashcard_score']}"
+        )
+
+        # Kontener karty
+        with st.container(border=True):
+            st.markdown(f"<div class='flashcard-container'>", unsafe_allow_html=True)
+
+            # Front karty (Pytanie)
+            st.caption(f"Translate: {card['direction'].split(' -> ')[0]}")
+            st.markdown(f"## {card['question']}")
+
+            # Tył karty (Odpowiedź) - widoczny po kliknięciu Reveal
+            if st.session_state["flashcard_revealed"]:
+                st.divider()
+                st.caption(f"Answer: {card['direction'].split(' -> ')[1]}")
+                st.markdown(f"## {card['answer']}")
+
+                # Audio automatycznie lub na przycisk
+                if st.button("🔊 Listen", key=f"fc_audio_{idx}"):
+                    st.audio(text_to_speech(card["answer"]), format="audio/mpeg")
+
+            st.markdown("</div>", unsafe_allow_html=True)
+
+        # Kontrolki
+        if not st.session_state["flashcard_revealed"]:
+            if st.button("👁️ Reveal Answer", use_container_width=True):
+                st.session_state["flashcard_revealed"] = True
+                st.rerun()
+        else:
+            c_know, c_dontknow = st.columns(2)
+
+            with c_know:
+                if st.button("✅ I knew it", use_container_width=True):
+                    st.session_state["flashcard_score"] += 1
+                    # Next card logic
+                    if idx < total - 1:
+                        st.session_state["flashcard_idx"] += 1
+                        st.session_state["flashcard_revealed"] = False
+                    else:
+                        st.session_state["flashcards_data"] = []  # End session
+                        st.balloons()
+                        st.success(
+                            f"Session finished! Score: {st.session_state['flashcard_score']}/{total}"
+                        )
+                    st.rerun()
+
+            with c_dontknow:
+                if st.button("❌ Didn't know", use_container_width=True):
+                    # Next card logic (no score increment)
+                    if idx < total - 1:
+                        st.session_state["flashcard_idx"] += 1
+                        st.session_state["flashcard_revealed"] = False
+                    else:
+                        st.session_state["flashcards_data"] = []  # End session
+                        st.info(
+                            f"Session finished. Score: {st.session_state['flashcard_score']}/{total}"
+                        )
+                    st.rerun()
+
+        if st.button("Exit Flashcards Mode", type="secondary"):
+            st.session_state["flashcards_data"] = []
+            st.session_state["flashcard_idx"] = 0
+            st.rerun()
+
+
+# 7. Search Translation (Dynamic Layout + Score)
+with search_tr:
     cur_mode = st.session_state.get("search_tr_mode", "None")
 
     if cur_mode == "None":
@@ -1268,8 +1413,8 @@ with search_translation:
                     st.caption("Translation")
                     st.success(row.get("Translation"))
 
-# 7. Search Corrections
-with search_correction:
+# 8. Search Corrections
+with search_cor:
     query_cor = st.text_input("Enter Correction Query", key="search_cor_in")
     if st.button("Search", use_container_width=True, key="search_cor_btn"):
         df = list_corrections(query_cor)
@@ -1302,7 +1447,7 @@ with search_correction:
                     st.divider()
                     st.write(row.get("Grammar_Rules"))
 
-# 8. Search Audio
+# 9. Search Audio
 with search_audio:
     query_audio = st.text_input(
         "Enter Audio Transcription Query", key="search_audio_in"
