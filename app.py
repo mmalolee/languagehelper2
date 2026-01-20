@@ -43,18 +43,28 @@ st.markdown(
             border: 1px solid #d6d6d6;
         }
 
+        /* STYL FISZKI - CZYSTY UKŁAD BEZ RAMKI */
         .flashcard-container {
-            padding: 40px;
-            border: 2px solid #e0e0e0;
-            border-radius: 15px;
-            background-color: #ffffff;
-            margin-bottom: 20px;
+            padding: 20px 0;
             text-align: center;
-            min-height: 250px;
+            min-height: 150px;
             display: flex;
             flex-direction: column;
             justify-content: center;
             align-items: center;
+        }
+        
+        .flashcard-question {
+            font-size: 2.5em;
+            font-weight: bold;
+            margin-bottom: 10px;
+        }
+        
+        .flashcard-answer {
+            font-size: 2em;
+            color: #4CAF50;
+            margin-top: 20px;
+            margin-bottom: 20px;
         }
     </style>
 """,
@@ -731,7 +741,6 @@ assure_qdrant_collections_exist()
     text_cor,
     speech_cor,
     quiz_tab,
-    flashcards_tab,
     search_tr,
     search_cor,
     search_aud,
@@ -742,7 +751,6 @@ assure_qdrant_collections_exist()
         "Correct Text",
         "Record & Correct",
         "Vocabulary Quiz",
-        "Flashcards",
         "Search Translations",
         "Search Corrections",
         "Search Audio",
@@ -1102,21 +1110,24 @@ with speech_cor:
         else:
             st.warning("No Correction to Save")
 
-# 5. Quiz Tab
+# 5. Quiz Tab (MERGED FLASHCARDS + QUIZ)
 with quiz_tab:
-    st.header("Vocabulary & Phrase Quiz")
+    st.header("Vocabulary & Flashcards")
+
     if not st.session_state.get("quiz_active", False) and not st.session_state.get(
         "quiz_finished_final", False
     ):
-        st.subheader("Quiz Settings")
+        st.subheader("Settings")
         c1, c2 = st.columns(2)
         with c1:
             q_lang1 = st.selectbox("Language 1", LANGUAGES_INPUT, key="q_lang1")
         with c2:
             q_lang2 = st.selectbox("Language 2", LANGUAGES_OUTPUT, key="q_lang2")
+
+        # Opcje trybu: Quiz (pisanie), Quiz (wybór), Fiszki (samoocena)
         quiz_mode = st.radio(
-            "Select Quiz Mode",
-            ["Written Answer", "Select Translation"],
+            "Select Mode",
+            ["Written Answer", "Select Translation", "Flashcards"],
             horizontal=True,
         )
 
@@ -1125,17 +1136,17 @@ with quiz_tab:
         else:
             candidates = get_quiz_data(q_lang1, q_lang2)
             count = len(candidates)
-            if count < 5:
-                st.warning(
-                    f"Not enough items ({count}). You need at least 5 short phrases/words."
-                )
+            if count < 3:
+                st.warning(f"Not enough items ({count}). You need at least 3 phrases.")
             else:
                 st.success(f"Found {count} items.")
                 num_q = st.slider(
-                    "Select number of questions", 1, min(count, 20), min(count, 5)
+                    "Select number of items", 1, min(count, 20), min(count, 5)
                 )
-                if st.button("Start Quiz", use_container_width=True):
+
+                if st.button("Start", use_container_width=True):
                     selected = random.sample(candidates, num_q)
+
                     if quiz_mode == "Select Translation":
                         for item in selected:
                             same_dir_candidates = [
@@ -1153,75 +1164,166 @@ with quiz_tab:
                             options = distractors + [item["answer"]]
                             random.shuffle(options)
                             item["options"] = options
+
                     st.session_state["quiz_questions"] = selected
                     st.session_state["quiz_mode"] = quiz_mode
                     st.session_state["quiz_current_index"] = 0
                     st.session_state["quiz_score"] = 0
                     st.session_state["quiz_active"] = True
                     st.session_state["quiz_submitted"] = False
+
+                    if quiz_mode == "Flashcards":
+                        st.session_state["flashcard_revealed"] = False
+                        st.session_state["flashcard_score"] = 0
+
                     st.rerun()
 
+    # --- ACTIVE SESSION ---
     elif st.session_state.get("quiz_active", False):
         idx = st.session_state["quiz_current_index"]
         questions = st.session_state["quiz_questions"]
         current = questions[idx]
         mode = st.session_state["quiz_mode"]
-        st.write(f"Question {idx + 1} of {len(questions)}")
+
+        st.write(f"Item {idx + 1} of {len(questions)}")
         st.progress((idx) / len(questions))
 
-        with st.container(border=True):
-            st.caption(f"Translate: {current['direction']}")
-            st.subheader(f"'{current['question']}'")
-            if st.button("Listen to Question", key=f"q_audio_{idx}"):
-                with st.spinner("Generating..."):
-                    st.audio(text_to_speech(current["question"]), format="audio/mpeg")
+        # --- LOGIKA FISZEK (FLASHCARDS) ---
+        if mode == "Flashcards":
+            # Używamy kontenera bez ramki (border=False, domyślny)
+            with st.container():
+                st.caption(f"Translate to: {current['direction'].split(' -> ')[1]}")
+                st.markdown(f"## {current['question']}")
 
-            if mode == "Written Answer":
-                user_ans = st.text_input(
-                    "Your answer:",
-                    key=f"input_q_{idx}",
-                    disabled=st.session_state["quiz_submitted"],
-                )
-            else:
-                user_ans = st.radio(
-                    "Choose correct translation:",
-                    current["options"],
-                    key=f"radio_q_{idx}",
-                    disabled=st.session_state["quiz_submitted"],
-                )
+                if st.session_state["flashcard_revealed"]:
+                    st.divider()
+                    st.markdown(f"## {current['answer']}")
 
-            if not st.session_state["quiz_submitted"]:
-                if st.button("Check Answer", use_container_width=True):
-                    st.session_state["quiz_submitted"] = True
+                    # 1. Pasek z Audio i Exit (w jednej linii)
+                    c_aud, c_ex = st.columns([0.7, 0.3])
+                    with c_aud:
+                        st.audio(text_to_speech(current["answer"]), format="audio/mpeg")
+                    with c_ex:
+                        if st.button(
+                            "Exit", key=f"fc_exit_{idx}", use_container_width=True
+                        ):
+                            st.session_state["quiz_active"] = False
+                            st.session_state["quiz_finished_final"] = (
+                                True  # Lub reset całkowity
+                            )
+                            st.rerun()
+
+            if not st.session_state["flashcard_revealed"]:
+                if st.button(
+                    "Reveal Answer", use_container_width=True
+                ):  # Usunięto emoji
+                    st.session_state["flashcard_revealed"] = True
                     st.rerun()
             else:
-                is_correct = (
-                    user_ans.strip().lower() == current["answer"].strip().lower()
-                )
-                if is_correct:
-                    st.success(f"Correct. Answer: {current['answer']}")
-                    if f"scored_{idx}" not in st.session_state:
-                        st.session_state["quiz_score"] += 1
-                        st.session_state[f"scored_{idx}"] = True
-                else:
-                    st.error(f"Incorrect. Answer: {current['answer']}")
+                # 2. Pasek z oceną (poniżej audio/exit)
+                c_know, c_dontknow = st.columns(2)
+                with c_know:
+                    if st.button(
+                        "I knew it", use_container_width=True
+                    ):  # Usunięto emoji
+                        st.session_state["flashcard_score"] += 1
+                        if idx < len(questions) - 1:
+                            st.session_state["quiz_current_index"] += 1
+                            st.session_state["flashcard_revealed"] = False
+                            st.rerun()
+                        else:
+                            st.session_state["quiz_score"] = st.session_state[
+                                "flashcard_score"
+                            ]
+                            st.session_state["quiz_active"] = False
+                            st.session_state["quiz_finished_final"] = True
+                            st.rerun()
+                with c_dontknow:
+                    if st.button(
+                        "Didn't know", use_container_width=True
+                    ):  # Usunięto emoji
+                        if idx < len(questions) - 1:
+                            st.session_state["quiz_current_index"] += 1
+                            st.session_state["flashcard_revealed"] = False
+                            st.rerun()
+                        else:
+                            st.session_state["quiz_score"] = st.session_state[
+                                "flashcard_score"
+                            ]
+                            st.session_state["quiz_active"] = False
+                            st.session_state["quiz_finished_final"] = True
+                            st.rerun()
 
-                if st.button("Listen to Answer", key=f"ans_audio_{idx}"):
-                    st.audio(text_to_speech(current["answer"]), format="audio/mpeg")
+            # Przycisk Exit dostępny też przed odsłonięciem
+            if not st.session_state["flashcard_revealed"]:
+                if st.button("Exit", type="secondary"):
+                    st.session_state["quiz_active"] = False
+                    st.rerun()
 
-                if idx + 1 < len(questions):
-                    if st.button("Next Question", use_container_width=True):
-                        st.session_state["quiz_current_index"] += 1
-                        st.session_state["quiz_submitted"] = False
+        # --- LOGIKA QUIZU (WRITTEN / SELECT) ---
+        else:
+            with st.container(border=True):
+                st.caption(f"Translate: {current['direction']}")
+                st.subheader(f"'{current['question']}'")
+
+                if st.button("Listen to Question", key=f"q_audio_{idx}"):
+                    with st.spinner("Generating..."):
+                        st.audio(
+                            text_to_speech(current["question"]), format="audio/mpeg"
+                        )
+
+                if mode == "Written Answer":
+                    user_ans = st.text_input(
+                        "Your answer:",
+                        key=f"input_q_{idx}",
+                        disabled=st.session_state["quiz_submitted"],
+                    )
+                else:  # Select Translation
+                    user_ans = st.radio(
+                        "Choose correct translation:",
+                        current["options"],
+                        key=f"radio_q_{idx}",
+                        disabled=st.session_state["quiz_submitted"],
+                    )
+
+                if not st.session_state["quiz_submitted"]:
+                    if st.button("Check Answer", use_container_width=True):
+                        st.session_state["quiz_submitted"] = True
                         st.rerun()
                 else:
-                    if st.button("Finish Quiz", use_container_width=True):
-                        st.session_state["quiz_active"] = False
-                        st.session_state["quiz_finished_final"] = True
-                        st.rerun()
+                    is_correct = (
+                        user_ans.strip().lower() == current["answer"].strip().lower()
+                    )
+                    if is_correct:
+                        st.success(f"Correct. Answer: {current['answer']}")
+                        if f"scored_{idx}" not in st.session_state:
+                            st.session_state["quiz_score"] += 1
+                            st.session_state[f"scored_{idx}"] = True
+                    else:
+                        st.error(f"Incorrect. Answer: {current['answer']}")
 
+                    if st.button("Listen to Answer", key=f"ans_audio_{idx}"):
+                        st.audio(text_to_speech(current["answer"]), format="audio/mpeg")
+
+                    if idx + 1 < len(questions):
+                        if st.button("Next Question", use_container_width=True):
+                            st.session_state["quiz_current_index"] += 1
+                            st.session_state["quiz_submitted"] = False
+                            st.rerun()
+                    else:
+                        if st.button("Finish Quiz", use_container_width=True):
+                            st.session_state["quiz_active"] = False
+                            st.session_state["quiz_finished_final"] = True
+                            st.rerun()
+
+            if st.button("Exit Quiz", type="secondary"):
+                st.session_state["quiz_active"] = False
+                st.rerun()
+
+    # --- RESULT SCREEN ---
     elif st.session_state.get("quiz_finished_final", False):
-        st.header("Quiz Results")
+        st.header("Results")
+        st.balloons()
         st.metric(
             "Final Score",
             f"{st.session_state['quiz_score']} / {len(st.session_state['quiz_questions'])}",
@@ -1232,100 +1334,6 @@ with quiz_tab:
             for key in list(st.session_state.keys()):
                 if key.startswith("scored_"):
                     del st.session_state[key]
-            st.rerun()
-
-# 6. Flashcards Tab (MODIFIED: REVEAL & SELF-ASSESS)
-with flashcards_tab:
-    st.header("Flashcards Mode")
-
-    if not st.session_state.get("flashcards_data"):
-        c1, c2 = st.columns(2)
-        with c1:
-            f_lang1 = st.selectbox("Language 1", LANGUAGES_INPUT, key="f_lang1")
-        with c2:
-            f_lang2 = st.selectbox("Language 2", LANGUAGES_OUTPUT, key="f_lang2")
-
-        if st.button("Load Flashcards", use_container_width=True):
-            data = get_quiz_data(f_lang1, f_lang2)
-            if not data:
-                st.warning("No flashcards found for these languages.")
-            else:
-                random.shuffle(data)
-                st.session_state["flashcards_data"] = data
-                st.session_state["flashcard_idx"] = 0
-                st.session_state["flashcard_revealed"] = False
-                st.session_state["flashcard_score"] = 0
-                st.rerun()
-
-    else:
-        idx = st.session_state["flashcard_idx"]
-        total = len(st.session_state["flashcards_data"])
-        card = st.session_state["flashcards_data"][idx]
-
-        st.progress((idx + 1) / total)
-        st.caption(
-            f"Card {idx + 1} of {total} | Score: {st.session_state['flashcard_score']}"
-        )
-
-        # Kontener karty
-        with st.container(border=True):
-            st.markdown(f"<div class='flashcard-container'>", unsafe_allow_html=True)
-
-            # Front karty (Pytanie)
-            st.caption(f"Translate: {card['direction'].split(' -> ')[0]}")
-            st.markdown(f"## {card['question']}")
-
-            # Tył karty (Odpowiedź) - widoczny po kliknięciu Reveal
-            if st.session_state["flashcard_revealed"]:
-                st.divider()
-                st.caption(f"Answer: {card['direction'].split(' -> ')[1]}")
-                st.markdown(f"## {card['answer']}")
-
-                # Audio automatycznie lub na przycisk
-                if st.button("🔊 Listen", key=f"fc_audio_{idx}"):
-                    st.audio(text_to_speech(card["answer"]), format="audio/mpeg")
-
-            st.markdown("</div>", unsafe_allow_html=True)
-
-        # Kontrolki
-        if not st.session_state["flashcard_revealed"]:
-            if st.button("👁️ Reveal Answer", use_container_width=True):
-                st.session_state["flashcard_revealed"] = True
-                st.rerun()
-        else:
-            c_know, c_dontknow = st.columns(2)
-
-            with c_know:
-                if st.button("✅ I knew it", use_container_width=True):
-                    st.session_state["flashcard_score"] += 1
-                    # Next card logic
-                    if idx < total - 1:
-                        st.session_state["flashcard_idx"] += 1
-                        st.session_state["flashcard_revealed"] = False
-                    else:
-                        st.session_state["flashcards_data"] = []  # End session
-                        st.balloons()
-                        st.success(
-                            f"Session finished! Score: {st.session_state['flashcard_score']}/{total}"
-                        )
-                    st.rerun()
-
-            with c_dontknow:
-                if st.button("❌ Didn't know", use_container_width=True):
-                    # Next card logic (no score increment)
-                    if idx < total - 1:
-                        st.session_state["flashcard_idx"] += 1
-                        st.session_state["flashcard_revealed"] = False
-                    else:
-                        st.session_state["flashcards_data"] = []  # End session
-                        st.info(
-                            f"Session finished. Score: {st.session_state['flashcard_score']}/{total}"
-                        )
-                    st.rerun()
-
-        if st.button("Exit Flashcards Mode", type="secondary"):
-            st.session_state["flashcards_data"] = []
-            st.session_state["flashcard_idx"] = 0
             st.rerun()
 
 
@@ -1448,7 +1456,7 @@ with search_cor:
                     st.write(row.get("Grammar_Rules"))
 
 # 9. Search Audio
-with search_audio:
+with search_aud:
     query_audio = st.text_input(
         "Enter Audio Transcription Query", key="search_audio_in"
     )
