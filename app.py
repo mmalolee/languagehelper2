@@ -6,12 +6,16 @@ from io import BytesIO
 from pydub import AudioSegment
 from audiorecorder import audiorecorder
 from qdrant_client import QdrantClient
-from qdrant_client.models import PointStruct, VectorParams, Distance
+from qdrant_client import models
 import pandas as pd
 import os
 import random
 
-# Konfiguracja szerokiego układu strony i poprawka CSS dla zakładek
+# ---------------------------------------------------------
+# KONFIGURACJA STRONY
+# ---------------------------------------------------------
+st.set_page_config(layout="wide", page_title="Language Helper")
+
 st.markdown(
     """
     <style>
@@ -26,6 +30,17 @@ st.markdown(
         button[data-baseweb="tab"] {
             font-size: 14px;
             white-space: nowrap;
+        }
+        
+        .similarity-badge {
+            background-color: #f0f2f6;
+            color: #31333F;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 0.8em;
+            font-weight: bold;
+            margin-left: 10px;
+            border: 1px solid #d6d6d6;
         }
     </style>
 """,
@@ -75,8 +90,8 @@ class CheckGrammar(BaseModel):
 
 class Words(BaseModel):
     word: str
-    translation: str  # Krótkie tłumaczenie (do Quizu)
-    definition: str  # Wyjaśnienie/Definicja (do kontekstu)
+    translation: str
+    definition: str
 
 
 class Grammar(BaseModel):
@@ -107,15 +122,13 @@ class CheckLanguage(BaseModel):
 
 def get_audio_bytes_from_file(file):
     audio_segment = AudioSegment.from_file(file)
-    audio_segment_file_like = audio_segment.export(BytesIO())
-    raw_bytes = audio_segment_file_like.getvalue()
-    return raw_bytes
+    audio_segment_file_like = audio_segment.export(BytesIO(), format="mp3")
+    return audio_segment_file_like.getvalue()
 
 
 def get_audio_bytes_from_speech(speech):
-    audio_segment_file_like = speech.export(BytesIO())
-    raw_bytes = audio_segment_file_like.getvalue()
-    return raw_bytes
+    audio_segment_file_like = speech.export(BytesIO(), format="mp3")
+    return audio_segment_file_like.getvalue()
 
 
 ##########
@@ -149,8 +162,7 @@ def check_language(to_check):
         messages=[
             {
                 "role": "system",
-                "content": f"""You are a language detector. Detect the language of the "{to_check}". Return detected language in English, e.g. "Polish". Do not return dialects, variations, or pidgin forms.
-                Do not guess meanings of words in other languages.""",
+                "content": f"""You are a language detector. Detect the language of the "{to_check}". Return detected language name in English (e.g. 'Polish', 'German'). Do not return dialects, variations, or pidgin forms.""",
             },
             {"role": "user", "content": to_check},
         ],
@@ -198,11 +210,11 @@ def get_corr_words_and_grammar(to_correct, input_language):
         ],
     ).model_dump()
 
-    corrected_form = explanation["corrected"]
-    difficult_words = explanation["difficult_words"]
-    grammar = explanation["grammars"]
-
-    return corrected_form, difficult_words, grammar
+    return (
+        explanation["corrected"],
+        explanation["difficult_words"],
+        explanation["grammars"],
+    )
 
 
 def text_to_speech(text):
@@ -275,67 +287,67 @@ def assure_qdrant_collections_exist():
 
     for name in QDRANT_COLLECTION_NAMES:
         if not qdrant_client.collection_exists(name):
-            if name == QDRANT_COLLECTION_NAMES[0]:
-                config = {
-                    "Input_Language_Vector": VectorParams(
-                        size=EMBEDDING_DIM, distance=Distance.COSINE
+            if name == "translations":
+                vectors = {
+                    "Input_Vector": models.VectorParams(
+                        size=EMBEDDING_DIM, distance=models.Distance.COSINE
                     ),
-                    "Input_Vector": VectorParams(
-                        size=EMBEDDING_DIM, distance=Distance.COSINE
+                    "Input_Language_Vector": models.VectorParams(
+                        size=EMBEDDING_DIM, distance=models.Distance.COSINE
                     ),
-                    "Translation_Language_Vector": VectorParams(
-                        size=EMBEDDING_DIM, distance=Distance.COSINE
+                    "Translation_Language_Vector": models.VectorParams(
+                        size=EMBEDDING_DIM, distance=models.Distance.COSINE
                     ),
-                    "Translation_Vector": VectorParams(
-                        size=EMBEDDING_DIM, distance=Distance.COSINE
+                    "Translation_Vector": models.VectorParams(
+                        size=EMBEDDING_DIM, distance=models.Distance.COSINE
                     ),
                 }
-            elif name == QDRANT_COLLECTION_NAMES[1]:
-                config = {
-                    "Input_Language_Vector": VectorParams(
-                        size=EMBEDDING_DIM, distance=Distance.COSINE
+            elif name == "corrections":
+                vectors = {
+                    "Input_Text_Vector": models.VectorParams(
+                        size=EMBEDDING_DIM, distance=models.Distance.COSINE
                     ),
-                    "Input_Text_Vector": VectorParams(
-                        size=EMBEDDING_DIM, distance=Distance.COSINE
+                    "Input_Language_Vector": models.VectorParams(
+                        size=EMBEDDING_DIM, distance=models.Distance.COSINE
                     ),
-                    "Correction_Vector": VectorParams(
-                        size=EMBEDDING_DIM, distance=Distance.COSINE
+                    "Correction_Vector": models.VectorParams(
+                        size=EMBEDDING_DIM, distance=models.Distance.COSINE
                     ),
-                    "Diff_Words_Vector": VectorParams(
-                        size=EMBEDDING_DIM, distance=Distance.COSINE
+                    "Diff_Words_Vector": models.VectorParams(
+                        size=EMBEDDING_DIM, distance=models.Distance.COSINE
                     ),
-                    "Grammar_Rules_Vector": VectorParams(
-                        size=EMBEDDING_DIM, distance=Distance.COSINE
+                    "Grammar_Rules_Vector": models.VectorParams(
+                        size=EMBEDDING_DIM, distance=models.Distance.COSINE
                     ),
                 }
             else:
-                config = {
-                    "Input_Language_Vector": VectorParams(
-                        size=EMBEDDING_DIM, distance=Distance.COSINE
+                vectors = {
+                    "Transcription_Vector": models.VectorParams(
+                        size=EMBEDDING_DIM, distance=models.Distance.COSINE
                     ),
-                    "Transcription_Vector": VectorParams(
-                        size=EMBEDDING_DIM, distance=Distance.COSINE
+                    "Input_Language_Vector": models.VectorParams(
+                        size=EMBEDDING_DIM, distance=models.Distance.COSINE
                     ),
-                    "Translation_Language_Vector": VectorParams(
-                        size=EMBEDDING_DIM, distance=Distance.COSINE
+                    "Translation_Language_Vector": models.VectorParams(
+                        size=EMBEDDING_DIM, distance=models.Distance.COSINE
                     ),
-                    "Translation_Vector": VectorParams(
-                        size=EMBEDDING_DIM, distance=Distance.COSINE
+                    "Translation_Vector": models.VectorParams(
+                        size=EMBEDDING_DIM, distance=models.Distance.COSINE
                     ),
                 }
-            qdrant_client.create_collection(collection_name=name, vectors_config=config)
+            qdrant_client.create_collection(
+                collection_name=name, vectors_config=vectors
+            )
 
 
 def add_translation_to_db(input_language, input, translation_language, translation):
     qdrant_client = get_qdrant_client()
-    points_count = qdrant_client.count(
-        collection_name=QDRANT_COLLECTION_NAMES[0], exact=True
-    )
+    points_count = qdrant_client.count(collection_name="translations", exact=True).count
     qdrant_client.upsert(
-        collection_name=QDRANT_COLLECTION_NAMES[0],
+        collection_name="translations",
         points=[
-            PointStruct(
-                id=points_count.count + 1,
+            models.PointStruct(
+                id=points_count + 1,
                 vector={
                     "Input_Language_Vector": get_embedding(input_language),
                     "Input_Vector": get_embedding(input),
@@ -357,33 +369,31 @@ def add_vocabulary_to_db(input_language, words_list, translation_language="Engli
     qdrant_client = get_qdrant_client()
     for item in words_list:
         points_count = qdrant_client.count(
-            collection_name=QDRANT_COLLECTION_NAMES[0], exact=True
+            collection_name="translations", exact=True
+        ).count
+        word = item.word if hasattr(item, "word") else item["word"]
+        trans = (
+            item.translation if hasattr(item, "translation") else item["translation"]
         )
-        if isinstance(item, dict):
-            word = item.get("word", "").strip()
-            translation = item.get("translation", "").strip()
-        else:
-            word = item.word.strip()
-            translation = item.translation.strip()
 
         qdrant_client.upsert(
-            collection_name=QDRANT_COLLECTION_NAMES[0],
+            collection_name="translations",
             points=[
-                PointStruct(
-                    id=points_count.count + 1,
+                models.PointStruct(
+                    id=points_count + 1,
                     vector={
                         "Input_Language_Vector": get_embedding(input_language),
                         "Input_Vector": get_embedding(word),
                         "Translation_Language_Vector": get_embedding(
                             translation_language
                         ),
-                        "Translation_Vector": get_embedding(translation),
+                        "Translation_Vector": get_embedding(trans),
                     },
                     payload={
                         "Input_Text_Language": input_language,
                         "Input_Text": word,
                         "Translation_Language": translation_language,
-                        "Translation": translation,
+                        "Translation": trans,
                     },
                 )
             ],
@@ -392,27 +402,25 @@ def add_vocabulary_to_db(input_language, words_list, translation_language="Engli
 
 def add_correction_to_db(input_language, input, correction, diff_words, grammar_rules):
     qdrant_client = get_qdrant_client()
-    points_count = qdrant_client.count(
-        collection_name=QDRANT_COLLECTION_NAMES[1], exact=True
-    )
+    points_count = qdrant_client.count(collection_name="corrections", exact=True).count
     qdrant_client.upsert(
-        collection_name=QDRANT_COLLECTION_NAMES[1],
+        collection_name="corrections",
         points=[
-            PointStruct(
-                id=points_count.count + 1,
+            models.PointStruct(
+                id=points_count + 1,
                 vector={
                     "Input_Language_Vector": get_embedding(input_language),
                     "Input_Text_Vector": get_embedding(input),
                     "Correction_Vector": get_embedding(correction),
-                    "Diff_Words_Vector": get_embedding(diff_words),
-                    "Grammar_Rules_Vector": get_embedding(grammar_rules),
+                    "Diff_Words_Vector": get_embedding(str(diff_words)),
+                    "Grammar_Rules_Vector": get_embedding(str(grammar_rules)),
                 },
                 payload={
                     "Input_Language": input_language,
                     "Input_Text": input,
                     "Correction": correction,
-                    "Diff_Words": diff_words,
-                    "Grammar_Rules": grammar_rules,
+                    "Diff_Words": str(diff_words),
+                    "Grammar_Rules": str(grammar_rules),
                 },
             )
         ],
@@ -424,13 +432,13 @@ def add_audio_translation_to_db(
 ):
     qdrant_client = get_qdrant_client()
     points_count = qdrant_client.count(
-        collection_name=QDRANT_COLLECTION_NAMES[2], exact=True
-    )
+        collection_name="audio_translations", exact=True
+    ).count
     qdrant_client.upsert(
-        collection_name=QDRANT_COLLECTION_NAMES[2],
+        collection_name="audio_translations",
         points=[
-            PointStruct(
-                id=points_count.count + 1,
+            models.PointStruct(
+                id=points_count + 1,
                 vector={
                     "Input_Language_Vector": get_embedding(input_language),
                     "Transcription_Vector": get_embedding(transcription),
@@ -448,136 +456,151 @@ def add_audio_translation_to_db(
     )
 
 
-def list_translations(query=None):
-    qdrant_client = get_qdrant_client()
-    if not query:
-        translations_from_db = qdrant_client.scroll(
-            collection_name=QDRANT_COLLECTION_NAMES[0], limit=10
-        )[0]
-        results = []
-        for item in translations_from_db:
-            results.append(
-                {
-                    "Input_Language": item.payload.get("Input_Text_Language"),
-                    "Input_Text": item.payload.get("Input_Text"),
-                    "Target_Language": item.payload.get("Translation_Language"),
-                    "Translation": item.payload.get("Translation"),
-                }
+# --- FUNKCJE WYSZUKIWANIA ---
+
+
+def list_translations(query=None, language_filter=None, target_language_filter=None):
+    client = get_qdrant_client()
+    conditions = []
+
+    if language_filter and language_filter != "All":
+        conditions.append(
+            models.FieldCondition(
+                key="Input_Text_Language",
+                match=models.MatchValue(value=language_filter),
             )
-        return pd.DataFrame(results)
+        )
+    if target_language_filter and target_language_filter != "All":
+        conditions.append(
+            models.FieldCondition(
+                key="Translation_Language",
+                match=models.MatchValue(value=target_language_filter),
+            )
+        )
+
+    search_filter = models.Filter(must=conditions) if conditions else None
+
+    if not query:
+        results, _ = client.scroll(
+            collection_name="translations", scroll_filter=search_filter, limit=10
+        )
+        return pd.DataFrame(
+            [
+                {
+                    "Input_Language": r.payload["Input_Text_Language"],
+                    "Input_Text": r.payload["Input_Text"],
+                    "Target_Language": r.payload["Translation_Language"],
+                    "Translation": r.payload["Translation"],
+                }
+                for r in results
+            ]
+        )
     else:
-        search_result = qdrant_client.search(
-            collection_name=QDRANT_COLLECTION_NAMES[0],
+        search_result = client.search(
+            collection_name="translations",
             query_vector=("Input_Vector", get_embedding(query)),
+            query_filter=search_filter,
             limit=10,
         )
-        results = []
-        for item in search_result:
-            results.append(
+        return pd.DataFrame(
+            [
                 {
-                    "Similarity": round(item.score, 2),
-                    "Input_Language": item.payload.get("Input_Text_Language"),
-                    "Input_Text": item.payload.get("Input_Text"),
-                    "Target_Language": item.payload.get("Translation_Language"),
-                    "Translation": item.payload.get("Translation"),
+                    "Score": round(r.score, 2),
+                    "Input_Language": r.payload["Input_Text_Language"],
+                    "Input_Text": r.payload["Input_Text"],
+                    "Target_Language": r.payload["Translation_Language"],
+                    "Translation": r.payload["Translation"],
                 }
-            )
-        return pd.DataFrame(results)
+                for r in search_result
+            ]
+        )
 
 
 def list_corrections(query=None):
-    qdrant_client = get_qdrant_client()
+    client = get_qdrant_client()
     if not query:
-        corrections_from_db = qdrant_client.scroll(
-            collection_name=QDRANT_COLLECTION_NAMES[1], limit=10
-        )[0]
-        results = []
-        for item in corrections_from_db:
-            results.append(
+        results, _ = client.scroll(collection_name="corrections", limit=10)
+        return pd.DataFrame(
+            [
                 {
-                    "Input_Language": item.payload.get("Input_Language"),
-                    "Input_Text": item.payload.get("Input_Text"),
-                    "Correction": item.payload.get("Correction"),
-                    "Difficult_Words": item.payload.get("Diff_Words"),
-                    "Grammar_Rules": item.payload.get("Grammar_Rules"),
+                    "Input_Language": r.payload["Input_Language"],
+                    "Input_Text": r.payload["Input_Text"],
+                    "Correction": r.payload["Correction"],
+                    "Difficult_Words": r.payload["Difficult_Words"],
+                    "Grammar_Rules": r.payload["Grammar_Rules"],
                 }
-            )
-        return pd.DataFrame(results)
+                for r in results
+            ]
+        )
     else:
-        search_result = qdrant_client.search(
-            collection_name=QDRANT_COLLECTION_NAMES[1],
+        search_result = client.search(
+            collection_name="corrections",
             query_vector=("Input_Text_Vector", get_embedding(query)),
             limit=10,
         )
-        results = []
-        for item in search_result:
-            results.append(
+        return pd.DataFrame(
+            [
                 {
-                    "Similarity": round(item.score, 2),
-                    "Input_Language": item.payload.get("Input_Language"),
-                    "Input_Text": item.payload.get("Input_Text"),
-                    "Correction": item.payload.get("Correction"),
-                    "Difficult_Words": item.payload.get("Diff_Words"),
-                    "Grammar_Rules": item.payload.get("Grammar_Rules"),
+                    "Score": round(r.score, 2),
+                    "Input_Language": r.payload["Input_Language"],
+                    "Input_Text": r.payload["Input_Text"],
+                    "Correction": r.payload["Correction"],
+                    "Difficult_Words": r.payload["Difficult_Words"],
+                    "Grammar_Rules": r.payload["Grammar_Rules"],
                 }
-            )
-        return pd.DataFrame(results)
+                for r in search_result
+            ]
+        )
 
 
 def list_audio_translations(query=None):
-    qdrant_client = get_qdrant_client()
+    client = get_qdrant_client()
     if not query:
-        audio_from_db = qdrant_client.scroll(
-            collection_name=QDRANT_COLLECTION_NAMES[2], limit=10
-        )[0]
-        results = []
-        for item in audio_from_db:
-            results.append(
+        results, _ = client.scroll(collection_name="audio_translations", limit=10)
+        return pd.DataFrame(
+            [
                 {
-                    "Input_Language": item.payload.get("Input_Language"),
-                    "Transcription": item.payload.get("Transcription"),
-                    "Target_Language": item.payload.get("Translation_Language"),
-                    "Translation": item.payload.get("Translation"),
+                    "Input_Language": r.payload["Input_Language"],
+                    "Transcription": r.payload["Transcription"],
+                    "Translation": r.payload["Translation"],
                 }
-            )
-        return pd.DataFrame(results)
+                for r in results
+            ]
+        )
     else:
-        search_result = qdrant_client.search(
-            collection_name=QDRANT_COLLECTION_NAMES[2],
+        search_result = client.search(
+            collection_name="audio_translations",
             query_vector=("Transcription_Vector", get_embedding(query)),
             limit=10,
         )
-        results = []
-        for item in search_result:
-            results.append(
+        return pd.DataFrame(
+            [
                 {
-                    "Similarity": round(item.score, 2),
-                    "Input_Language": item.payload.get("Input_Language"),
-                    "Transcription": item.payload.get("Transcription"),
-                    "Target_Language": item.payload.get("Translation_Language"),
-                    "Translation": item.payload.get("Translation"),
+                    "Score": round(r.score, 2),
+                    "Input_Language": r.payload["Input_Language"],
+                    "Transcription": r.payload["Transcription"],
+                    "Translation": r.payload["Translation"],
                 }
-            )
-        return pd.DataFrame(results)
+                for r in search_result
+            ]
+        )
 
 
 def get_quiz_data(input_lang, output_lang):
-    qdrant_client = get_qdrant_client()
-    points, _ = qdrant_client.scroll(
-        collection_name=QDRANT_COLLECTION_NAMES[0], limit=1000, with_payload=True
-    )
+    client = get_qdrant_client()
+    points, _ = client.scroll(collection_name="translations", limit=1000)
     candidates = []
     for p in points:
-        payload = p.payload
-        text = payload.get("Input_Text", "")
-        # Limit do 4 słów (łapie phrasal verbs, ale odrzuca zdania)
-        if len(text.split()) <= 4:
+        if len(p.payload.get("Input_Text", "").split()) <= 4:
             if (
-                payload.get("Input_Text_Language") == input_lang
-                and payload.get("Translation_Language") == output_lang
+                p.payload.get("Input_Text_Language") == input_lang
+                and p.payload.get("Translation_Language") == output_lang
             ):
                 candidates.append(
-                    {"question": text, "answer": payload.get("Translation")}
+                    {
+                        "question": p.payload.get("Input_Text"),
+                        "answer": p.payload.get("Translation"),
+                    }
                 )
     return candidates
 
@@ -586,83 +609,63 @@ def get_quiz_data(input_lang, output_lang):
 # SESSION STATES #
 ##################
 
-# --- Text Translation ---
-if "TT_input_language" not in st.session_state:
-    st.session_state["TT_input_language"] = ""
-if "TT_output_language" not in st.session_state:
-    st.session_state["TT_output_language"] = ""
-if "TT_detected_language" not in st.session_state:
-    st.session_state["TT_detected_language"] = ""
-if "TT_translate_text_input" not in st.session_state:
-    st.session_state["TT_translate_text_input"] = ""
-if "TT_translate_text_output" not in st.session_state:
-    st.session_state["TT_translate_text_output"] = ""
-if "TT_audio_in" not in st.session_state:
-    st.session_state["TT_audio_in"] = None
-if "TT_audio_out" not in st.session_state:
-    st.session_state["TT_audio_out"] = None
+keys = [
+    "TT_input_language",
+    "TT_output_language",
+    "TT_translate_text_input",
+    "TT_translate_text_output",
+    "TT_audio_in",
+    "TT_audio_out",
+    "TA_output_language",
+    "TA_input_language",
+    "TA_input_transcription",
+    "TA_output_text",
+    "TA_audio_out",
+    "TA_raw_diff_words",
+    "CT_input_language",
+    "CT_input_text",
+    "CT_output_text",
+    "CT_diff_words",
+    "CT_grammar_rules",
+    "CT_audio_out",
+    "CT_raw_diff_words",
+    "CS_input_language",
+    "CS_input_speech_as_text",
+    "CS_output_as_text",
+    "CS_diff_words",
+    "CS_grammar_rules",
+    "CS_audio_out",
+    "CS_raw_diff_words",
+    "quiz_active",
+    "quiz_questions",
+    "quiz_current_index",
+    "quiz_score",
+    "quiz_submitted",
+    "quiz_finished_final",
+    "quiz_mode",
+    "cached_tr_results",
+    "cached_cor_results",
+    "cached_audio_results",
+    "search_tr_mode",
+]
 
-# --- Audio Translation ---
-if "TA_output_language" not in st.session_state:
-    st.session_state["TA_output_language"] = ""
-if "TA_input_language" not in st.session_state:
-    st.session_state["TA_input_language"] = ""
-if "TA_input_transcription" not in st.session_state:
-    st.session_state["TA_input_transcription"] = ""
-if "TA_output_text" not in st.session_state:
-    st.session_state["TA_output_text"] = ""
-if "TA_audio_out" not in st.session_state:
-    st.session_state["TA_audio_out"] = None
+for k in keys:
+    if k not in st.session_state:
+        if "audio" in k:
+            st.session_state[k] = None
+        elif "list" in k or "words" in k or "results" in k or "questions" in k:
+            st.session_state[k] = []
+        elif "index" in k or "score" in k:
+            st.session_state[k] = 0
+        elif "active" in k or "submitted" in k or "finished" in k:
+            st.session_state[k] = False
+        else:
+            st.session_state[k] = ""
 
-# --- Text Correction ---
-if "CT_input_language" not in st.session_state:
-    st.session_state["CT_input_language"] = ""
-if "CT_input_text" not in st.session_state:
-    st.session_state["CT_input_text"] = ""
-if "CT_output_text" not in st.session_state:
-    st.session_state["CT_output_text"] = ""
-if "CT_diff_words" not in st.session_state:
-    st.session_state["CT_diff_words"] = ""
-if "CT_grammar_rules" not in st.session_state:
-    st.session_state["CT_grammar_rules"] = ""
-if "CT_audio_out" not in st.session_state:
-    st.session_state["CT_audio_out"] = None
-
-# --- Speech Correction ---
-if "CS_input_language" not in st.session_state:
-    st.session_state["CS_input_language"] = ""
-if "CS_input_speech_as_text" not in st.session_state:
-    st.session_state["CS_input_speech_as_text"] = ""
-if "CS_output_as_text" not in st.session_state:
-    st.session_state["CS_output_as_text"] = ""
-if "CS_diff_words" not in st.session_state:
-    st.session_state["CS_diff_words"] = ""
-if "CS_grammar_rules" not in st.session_state:
-    st.session_state["CS_grammar_rules"] = ""
-if "CS_audio_out" not in st.session_state:
-    st.session_state["CS_audio_out"] = None
-
-# --- Quiz ---
-if "quiz_active" not in st.session_state:
-    st.session_state["quiz_active"] = False
-if "quiz_questions" not in st.session_state:
-    st.session_state["quiz_questions"] = []
-if "quiz_current_index" not in st.session_state:
-    st.session_state["quiz_current_index"] = 0
-if "quiz_score" not in st.session_state:
-    st.session_state["quiz_score"] = 0
-if "quiz_submitted" not in st.session_state:
-    st.session_state["quiz_submitted"] = False
-if "quiz_finished_final" not in st.session_state:
-    st.session_state["quiz_finished_final"] = False
-if "quiz_mode" not in st.session_state:
-    st.session_state["quiz_mode"] = "Written Answer"
-
-# --- API Key ---
+# API Key
 if "OPENAI_API_KEY" not in st.session_state:
     st.session_state["OPENAI_API_KEY"] = os.getenv("OPENAI_API_KEY", "")
 
-# Ask for API Key if not present
 if not st.session_state.get("OPENAI_API_KEY"):
     st.info("Enter your OpenAI API key")
     st.session_state["OPENAI_API_KEY"] = st.text_input(
@@ -678,7 +681,6 @@ if not st.session_state.get("OPENAI_API_KEY"):
 ########
 
 st.title("Language Helper")
-
 assure_qdrant_collections_exist()
 
 (
@@ -702,7 +704,6 @@ assure_qdrant_collections_exist()
         "Search Audio Translations",
     ]
 )
-
 
 # 1. Text Translation
 with text_tr:
@@ -738,17 +739,14 @@ with text_tr:
                 st.session_state["TT_detected_language"]
                 == st.session_state["TT_input_language"]
             ):
-
                 st.session_state["TT_audio_in"] = text_to_speech(
                     st.session_state["TT_translate_text_input"]
                 )
-
                 st.session_state["TT_translate_text_output"] = translate_text(
                     st.session_state["TT_translate_text_input"],
                     st.session_state["TT_input_language"],
                     st.session_state["TT_output_language"],
                 )
-
                 st.session_state["TT_audio_out"] = text_to_speech(
                     st.session_state["TT_translate_text_output"]
                 )
@@ -760,7 +758,6 @@ with text_tr:
         else:
             st.warning("Enter the Text")
 
-    # WIDOK (renderowany zawsze)
     if st.session_state.get("TT_translate_text_output"):
         with c0:
             if st.session_state.get("TT_audio_in"):
@@ -788,7 +785,6 @@ with text_tr:
             st.session_state["TT_audio_out"] = None
         else:
             st.warning("No Translation to Save")
-
 
 # 2. Audio Translation
 with audio_tr:
@@ -822,7 +818,6 @@ with audio_tr:
                 st.session_state["TA_output_text"]
             )
 
-        # WIDOK
         if st.session_state.get("TA_output_text"):
             with st.container(border=True):
                 st.header(
@@ -831,12 +826,10 @@ with audio_tr:
                 st.text_area(
                     "Audio Translation", value=st.session_state["TA_output_text"]
                 )
-
                 if st.session_state.get("TA_raw_diff_words"):
-                    with st.expander("Extracted Vocabulary"):
+                    with st.expander("Extracted Vocabulary (will be added to Quiz)"):
                         for w in st.session_state["TA_raw_diff_words"]:
                             st.write(f"**{w.word}**: {w.translation} ({w.definition})")
-
                 if st.session_state.get("TA_audio_out"):
                     st.audio(st.session_state["TA_audio_out"], format="audio/mpeg")
 
@@ -848,7 +841,6 @@ with audio_tr:
                     st.session_state["TA_output_language"],
                     st.session_state["TA_output_text"],
                 )
-
                 if (
                     "TA_raw_diff_words" in st.session_state
                     and st.session_state["TA_raw_diff_words"]
@@ -859,13 +851,11 @@ with audio_tr:
                         st.session_state["TA_output_language"],
                     )
                     st.toast("Vocabulary added to Quiz!")
-
                 st.toast("Audio Translation Has Been Saved!")
                 st.session_state["TA_output_text"] = ""
                 st.session_state["TA_audio_out"] = None
             else:
                 st.warning("No Translation to Save")
-
 
 # 3. Text Correction
 with text_cor:
@@ -897,7 +887,6 @@ with text_cor:
                     )
 
                     st.session_state["CT_raw_diff_words"] = diff_words
-
                     words_expl = (
                         "".join(
                             [
@@ -916,10 +905,8 @@ with text_cor:
                         )
                         or "No tricky rules."
                     )
-
                     st.session_state["CT_diff_words"] = words_expl
                     st.session_state["CT_grammar_rules"] = gram_expl
-
                     st.session_state["CT_audio_out"] = text_to_speech(
                         st.session_state["CT_output_text"]
                     )
@@ -931,7 +918,6 @@ with text_cor:
         else:
             st.warning("Enter the Content")
 
-    # WIDOK
     if st.session_state.get("CT_output_text"):
         with st.container(border=True):
             st.header("Correct Form")
@@ -953,7 +939,6 @@ with text_cor:
                 st.session_state["CT_diff_words"],
                 st.session_state["CT_grammar_rules"],
             )
-
             if (
                 "CT_raw_diff_words" in st.session_state
                 and st.session_state["CT_raw_diff_words"]
@@ -964,19 +949,16 @@ with text_cor:
                     "English",
                 )
                 st.toast("Vocabulary from correction added to Quiz!")
-
             st.toast("Correction Has Been Saved!")
             st.session_state["CT_output_text"] = ""
             st.session_state["CT_audio_out"] = None
         else:
             st.warning("No Correction to Save")
 
-
 # 4. Record and Correct Speech
 with speech_cor:
     check_audio_correction_button = st.button("Check and Fix", use_container_width=True)
     save_button = st.button("Save Speech Correction", use_container_width=True)
-
     st.session_state["CS_input_language"] = st.selectbox(
         "Select Recorded Speech Language", LANGUAGES_INPUT, help="Select input language"
     )
@@ -995,11 +977,9 @@ with speech_cor:
             input_speech_bytes = get_audio_bytes_from_speech(input_speech)
             transcription = speech_to_text(input_speech_bytes)
             st.audio(input_speech_bytes)
-
         st.session_state["CS_input_speech_as_text"] = st.text_area(
             "Check and Correct the Recording", value=transcription
         )
-
         language_detected = check_language(st.session_state["CS_input_speech_as_text"])
 
         if check_audio_correction_button:
@@ -1014,9 +994,7 @@ with speech_cor:
                         st.session_state["CS_input_speech_as_text"],
                         st.session_state["CS_input_language"],
                     )
-
                     st.session_state["CS_raw_diff_words"] = diff_words
-
                     words_expl = (
                         "".join(
                             [
@@ -1035,21 +1013,17 @@ with speech_cor:
                         )
                         or "No tricky rules."
                     )
-
                     st.session_state["CS_output_as_text"] = sentence
                     st.session_state["CS_diff_words"] = words_expl
                     st.session_state["CS_grammar_rules"] = gram_expl
-
                     st.session_state["CS_audio_out"] = text_to_speech(
                         st.session_state["CS_output_as_text"]
                     )
-
             else:
                 st.warning(
                     f"Input and Detected Language Don't Match. Switch to {language_detected}"
                 )
 
-    # WIDOK
     if st.session_state.get("CS_output_as_text"):
         with st.container(border=True):
             st.header("Correct Form")
@@ -1071,7 +1045,6 @@ with speech_cor:
                 st.session_state["CS_diff_words"],
                 st.session_state["CS_grammar_rules"],
             )
-
             if "CS_raw_diff_words" in st.session_state:
                 add_vocabulary_to_db(
                     st.session_state["CS_input_language"],
@@ -1079,7 +1052,6 @@ with speech_cor:
                     "English",
                 )
                 st.toast("Difficult words added to your Quiz database!")
-
             st.toast("Correction saved!")
             st.session_state["CS_output_as_text"] = ""
             st.session_state["CS_input_speech_as_text"] = ""
@@ -1087,11 +1059,9 @@ with speech_cor:
         else:
             st.warning("No Correction to Save")
 
-
 # 5. Quiz Tab
 with quiz_tab:
-    st.header("Vocabulary & Phrase Quiz")
-
+    st.header("Vocabulary Quiz")
     if not st.session_state.get("quiz_active", False) and not st.session_state.get(
         "quiz_finished_final", False
     ):
@@ -1101,7 +1071,6 @@ with quiz_tab:
             q_src = st.selectbox("From Language", LANGUAGES_INPUT, key="q_lang_in")
         with c2:
             q_tgt = st.selectbox("To Language", LANGUAGES_OUTPUT, key="q_lang_out")
-
         quiz_mode = st.radio(
             "Select Quiz Mode",
             ["Written Answer", "Select Translation"],
@@ -1122,10 +1091,8 @@ with quiz_tab:
                 num_q = st.slider(
                     "Select number of questions", 1, min(count, 20), min(count, 5)
                 )
-
                 if st.button("Start Quiz", use_container_width=True):
                     selected = random.sample(candidates, num_q)
-
                     if quiz_mode == "Select Translation":
                         for item in selected:
                             other = [
@@ -1137,7 +1104,6 @@ with quiz_tab:
                             options = distractors + [item["answer"]]
                             random.shuffle(options)
                             item["options"] = options
-
                     st.session_state["quiz_questions"] = selected
                     st.session_state["quiz_mode"] = quiz_mode
                     st.session_state["quiz_current_index"] = 0
@@ -1151,7 +1117,6 @@ with quiz_tab:
         questions = st.session_state["quiz_questions"]
         current = questions[idx]
         mode = st.session_state["quiz_mode"]
-
         st.write(f"Question {idx + 1} of {len(questions)}")
         st.progress((idx) / len(questions))
 
@@ -1219,64 +1184,111 @@ with quiz_tab:
                     del st.session_state[key]
             st.rerun()
 
-
-# 6. Search Translation
+# 6. Search Translation (Dynamic Layout + Score)
 with search_translation:
-    query_tr = st.text_input("Enter Translation Query", key="search_tr_in")
-    search_triggered = st.button(
-        "Search", use_container_width=True, key="search_tr_btn"
-    )
+    cur_mode = st.session_state.get("search_tr_mode", "None")
 
-    if search_triggered:
-        df = list_translations(query_tr)
-        if not df.empty:
-            st.session_state["cached_tr_results"] = df.to_dict("records")
-        else:
-            st.session_state["cached_tr_results"] = []
-            st.info("No translations found.")
+    if cur_mode == "None":
+        cols = st.columns([0.7, 0.3])
+    elif cur_mode == "Both":
+        cols = st.columns([0.4, 0.2, 0.2, 0.2])
+    else:
+        cols = st.columns([0.5, 0.25, 0.25])
 
-    if (
-        "cached_tr_results" in st.session_state
-        and st.session_state["cached_tr_results"]
-    ):
+    with cols[0]:
+        query_tr = st.text_input(
+            "Translation Query",
+            key="search_tr_in",
+            label_visibility="collapsed",
+            placeholder="Enter text to search...",
+        )
+    with cols[1]:
+        filter_mode = st.selectbox(
+            "Filter By",
+            ["None", "Input Language", "Target Language", "Both"],
+            key="search_tr_mode",
+            label_visibility="collapsed",
+        )
+
+    f_in = f_out = None
+    if cur_mode == "Input Language":
+        with cols[2]:
+            f_in = st.selectbox(
+                "In Lang", LANGUAGES_INPUT, key="dyn_in", label_visibility="collapsed"
+            )
+    elif cur_mode == "Target Language":
+        with cols[2]:
+            f_out = st.selectbox(
+                "Out Lang",
+                LANGUAGES_OUTPUT,
+                key="dyn_out",
+                label_visibility="collapsed",
+            )
+    elif cur_mode == "Both":
+        with cols[2]:
+            f_in = st.selectbox(
+                "In Lang",
+                LANGUAGES_INPUT,
+                key="dyn_in_both",
+                label_visibility="collapsed",
+            )
+        with cols[3]:
+            f_out = st.selectbox(
+                "Out Lang",
+                LANGUAGES_OUTPUT,
+                key="dyn_out_both",
+                label_visibility="collapsed",
+            )
+
+    if st.button("Search", use_container_width=True, key="search_tr_btn"):
+        df = list_translations(query_tr, f_in, f_out)
+        st.session_state["cached_tr_results"] = df.to_dict("records")
+        if df.empty:
+            st.warning("No results found.")
+
+    if st.session_state.get("cached_tr_results"):
         st.header("Saved Translations")
         for idx, row in enumerate(st.session_state["cached_tr_results"]):
             with st.container(border=True):
-                src_lang = row.get("Input_Language")
-                tgt_lang = row.get("Target_Language")
-                st.subheader(f"{src_lang} -> {tgt_lang}")
+                # Badge z wynikiem
+                badge = (
+                    f"<span class='similarity-badge'>Score: {row.get('Score')}</span>"
+                    if "Score" in row
+                    else ""
+                )
+                st.markdown(
+                    f"**{row['Input_Language']} &rarr; {row['Target_Language']}** {badge}",
+                    unsafe_allow_html=True,
+                )
                 c1, c2 = st.columns(2)
                 with c1:
-                    st.markdown("**Original:**")
+                    st.caption("Original")
                     st.info(row.get("Input_Text"))
                 with c2:
-                    st.markdown("**Translation:**")
+                    st.caption("Translation")
                     st.success(row.get("Translation"))
 
-
-# 7. Search Correction (Tekstowe - bez audio)
+# 7. Search Corrections
 with search_correction:
     query_cor = st.text_input("Enter Correction Query", key="search_cor_in")
-    search_triggered_cor = st.button(
-        "Search", use_container_width=True, key="search_cor_btn"
-    )
+    if st.button("Search", use_container_width=True, key="search_cor_btn"):
+        df = list_corrections(query_cor)
+        st.session_state["cached_cor_results"] = df.to_dict("records")
+        if df.empty:
+            st.warning("No results found.")
 
-    if search_triggered_cor:
-        df_cor = list_corrections(query_cor)
-        if not df_cor.empty:
-            st.session_state["cached_cor_results"] = df_cor.to_dict("records")
-        else:
-            st.session_state["cached_cor_results"] = []
-            st.info("No corrections found.")
-
-    if (
-        "cached_cor_results" in st.session_state
-        and st.session_state["cached_cor_results"]
-    ):
+    if st.session_state.get("cached_cor_results"):
         st.header("Saved Corrections")
         for idx, row in enumerate(st.session_state["cached_cor_results"]):
             with st.container(border=True):
-                st.subheader(row.get("Input_Language"))
+                badge = (
+                    f"<span class='similarity-badge'>Score: {row.get('Score')}</span>"
+                    if "Score" in row
+                    else ""
+                )
+                st.markdown(
+                    f"**{row['Input_Language']}** {badge}", unsafe_allow_html=True
+                )
                 c1, c2 = st.columns(2)
                 with c1:
                     st.markdown("**Original:**")
@@ -1290,35 +1302,27 @@ with search_correction:
                     st.divider()
                     st.write(row.get("Grammar_Rules"))
 
-
-# 8. Search Audio Translations (Tekstowe - bez audio)
+# 8. Search Audio
 with search_audio:
     query_audio = st.text_input(
         "Enter Audio Transcription Query", key="search_audio_in"
     )
-    search_triggered_audio = st.button(
-        "Search", use_container_width=True, key="search_audio_btn"
-    )
+    if st.button("Search", use_container_width=True, key="search_audio_btn"):
+        df = list_audio_translations(query_audio)
+        st.session_state["cached_audio_results"] = df.to_dict("records")
+        if df.empty:
+            st.warning("No results found.")
 
-    if search_triggered_audio:
-        df_audio = list_audio_translations(query_audio)
-        if not df_audio.empty:
-            st.session_state["cached_audio_results"] = df_audio.to_dict("records")
-        else:
-            st.session_state["cached_audio_results"] = []
-            st.info("No audio translations found.")
-
-    if (
-        "cached_audio_results" in st.session_state
-        and st.session_state["cached_audio_results"]
-    ):
+    if st.session_state.get("cached_audio_results"):
         st.header("Saved Audio Translations")
         for idx, row in enumerate(st.session_state["cached_audio_results"]):
             with st.container(border=True):
-                src_lang = row.get("Input_Language")
-                tgt_lang = row.get("Target_Language")
-                st.subheader(f"{src_lang} -> {tgt_lang}")
-
+                badge = (
+                    f"<span class='similarity-badge'>Score: {row.get('Score')}</span>"
+                    if "Score" in row
+                    else ""
+                )
+                st.markdown(f"**Transcription** {badge}", unsafe_allow_html=True)
                 c1, c2 = st.columns(2)
                 with c1:
                     st.markdown("**Transcription:**")
