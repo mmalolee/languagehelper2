@@ -8,6 +8,29 @@ from audiorecorder import audiorecorder
 from qdrant_client import QdrantClient
 from qdrant_client.models import PointStruct, VectorParams, Distance
 import pandas as pd
+import os
+import random
+
+# Konfiguracja szerokiego układu strony i poprawka CSS dla zakładek
+st.markdown(
+    """
+    <style>
+        .block-container {
+            max-width: 60%;
+            padding-top: 1rem;
+            padding-right: 1rem;
+            padding-left: 1rem;
+            padding-bottom: 1rem;
+        }
+        
+        button[data-baseweb="tab"] {
+            font-size: 14px;
+            white-space: nowrap;
+        }
+    </style>
+""",
+    unsafe_allow_html=True,
+)
 
 
 #############
@@ -20,7 +43,7 @@ SPEECH_TO_TEXT_MODEL = "whisper-1"
 EMBEDDING_MODEL = "text-embedding-3-large"
 EMBEDDING_DIM = 3072
 
-QDRANT_COLLECTION_NAMES = ["translations", "corrections"]
+QDRANT_COLLECTION_NAMES = ["translations", "corrections", "audio_translations"]
 
 LANGUAGES_INPUT = sorted(["English", "German", "Italian", "Spanish", "Czech", "Polish"])
 LANGUAGES_OUTPUT = sorted(
@@ -33,12 +56,10 @@ LANGUAGES_OUTPUT = sorted(
 #################
 
 
-@st.cache_resource
 def get_openai_client():
     return OpenAI(api_key=st.session_state["OPENAI_API_KEY"])
 
 
-@st.cache_resource
 def get_instructor_openai_client():
     return instructor.from_openai(get_openai_client())
 
@@ -54,7 +75,8 @@ class CheckGrammar(BaseModel):
 
 class Words(BaseModel):
     word: str
-    w_explanation: str
+    translation: str
+    definition: str
 
 
 class Grammar(BaseModel):
@@ -71,6 +93,7 @@ class Explanation(BaseModel):
 class AudioTranslationAndLanguage(BaseModel):
     translation: str
     input_language: str
+    difficult_words: list[Words]
 
 
 class CheckLanguage(BaseModel):
@@ -78,7 +101,7 @@ class CheckLanguage(BaseModel):
 
 
 #################################
-# GETTING AUDIO BYTES FORM FILE #
+# AUDIO PROCESSING FUNCTIONS    #
 #################################
 
 
@@ -86,25 +109,22 @@ def get_audio_bytes_from_file(file):
     audio_segment = AudioSegment.from_file(file)
     audio_segment_file_like = audio_segment.export(BytesIO())
     raw_bytes = audio_segment_file_like.getvalue()
-
     return raw_bytes
-
-
-##########
-# OPENAI #
-##########
 
 
 def get_audio_bytes_from_speech(speech):
     audio_segment_file_like = speech.export(BytesIO())
     raw_bytes = audio_segment_file_like.getvalue()
-
     return raw_bytes
+
+
+##########
+# LOGIC  #
+##########
 
 
 def translate_text(text, language_input, language_output):
     openai_client = get_openai_client()
-
     translation = openai_client.chat.completions.create(
         model=MODEL,
         temperature=0,
@@ -117,13 +137,11 @@ def translate_text(text, language_input, language_output):
             {"role": "user", "content": text.strip()},
         ],
     )
-
     return translation.choices[0].message.content
 
 
 def check_language(to_check):
     instructor_openai_client = get_instructor_openai_client()
-
     response = instructor_openai_client.chat.completions.create(
         model=MODEL,
         temperature=0,
@@ -137,13 +155,11 @@ def check_language(to_check):
             {"role": "user", "content": to_check},
         ],
     )
-
     return response.language_detected
 
 
 def check_grammar(to_check, input_language):
     instructor_openai_client = get_instructor_openai_client()
-
     response = instructor_openai_client.chat.completions.create(
         model=MODEL,
         temperature=0,
@@ -161,7 +177,6 @@ def check_grammar(to_check, input_language):
 
 def get_corr_words_and_grammar(to_correct, input_language):
     instructor_openai_client = get_instructor_openai_client()
-
     explanation = instructor_openai_client.chat.completions.create(
         model=MODEL,
         temperature=0,
@@ -171,9 +186,12 @@ def get_corr_words_and_grammar(to_correct, input_language):
                 "role": "system",
                 "content": f"""You are a professional grammar specialist in {input_language}. Do 4 things:
                     1. Correct the grammar of the input text.
-                    2. List all advanced or translation-challenging words from the "{to_correct}", and provide definitions or explanations in English.
-                    3. Explain any difficult or tricky grammatical constructions found in the original text, such as unusual verb tenses, passive voice, subjunctive mood, or unusual word order.
-                    4. All explanations, definitions, and translations must be given in English, regardless of the {input_language}.
+                    2. Extract difficult vocabulary, phrasal verbs, or idioms from the input text.
+                       - 'word': The specific phrase or collocation in {input_language} (e.g., 'look at', 'take off').
+                       - 'translation': The direct, short translation in English (e.g. 'patrzeć na', 'startować'). This is for flashcards.
+                       - 'definition': A short explanation or definition in English to provide context.
+                    3. Explain any difficult or tricky grammatical constructions found in the original text.
+                    4. All explanations must be given in English.
                     """,
             },
             {"role": "user", "content": to_correct.strip()},
@@ -189,57 +207,56 @@ def get_corr_words_and_grammar(to_correct, input_language):
 
 def text_to_speech(text):
     openai_client = get_openai_client()
-
     speech = openai_client.audio.speech.create(
-        model=TEXT_TO_SPEECH_MODEL, voice="onyx", response_format="wav", input=text
+        model=TEXT_TO_SPEECH_MODEL, voice="onyx", response_format="mp3", input=text
     )
-
     return speech.content
 
 
 def speech_to_text(speech):
     openai_client = get_openai_client()
-
     speech_file_like = BytesIO(speech)
     speech_file_like.name = "audio.mp3"
-
     transcription = openai_client.audio.transcriptions.create(
         model=SPEECH_TO_TEXT_MODEL,
         file=speech_file_like,
         response_format="verbose_json",
     )
-
     return transcription.text
 
 
 def translate_transcription(transcription, output_language):
     instructor_openai_client = get_instructor_openai_client()
-    translation = instructor_openai_client.chat.completions.create(
+    translation_obj = instructor_openai_client.chat.completions.create(
         model=MODEL,
         temperature=0,
         response_model=AudioTranslationAndLanguage,
         messages=[
             {
                 "role": "system",
-                "content": f"""You are a professional personal {output_language} translator. Do two things:
-                1. Detect the language from "{transcription}" and translate to {output_language}. Preserve formatting, punctuation, and capitalization exactly as in the input. 
-                Translate word by word if necessary. Output only the translated text.
-                2. Return full detected from language "{transcription}." (e.g. Polish, German)""",
+                "content": f"""You are a professional personal {output_language} translator. Do three things:
+                1. Detect the language from "{transcription}" and translate to {output_language}. Preserve formatting.
+                2. Return full detected language name (e.g. Polish, German).
+                3. Extract difficult vocabulary, phrasal verbs, or idioms from the SOURCE text.
+                   - For 'word': provide the specific source phrase.
+                   - For 'translation': provide ONLY the direct translation in {output_language}.
+                   - For 'definition': provide a short definition/context in {output_language}.""",
             },
             {"role": "user", "content": transcription.strip()},
         ],
     )
-
-    return translation.translation, translation.input_language
+    return (
+        translation_obj.translation,
+        translation_obj.input_language,
+        translation_obj.difficult_words,
+    )
 
 
 def get_embedding(text):
     openai_client = get_openai_client()
-
     result = openai_client.embeddings.create(
         input=[text], model=EMBEDDING_MODEL, dimensions=EMBEDDING_DIM
     )
-
     return result.data[0].embedding
 
 
@@ -256,63 +273,64 @@ def get_qdrant_client():
 def assure_qdrant_collections_exist():
     qdrant_client = get_qdrant_client()
 
-    if not qdrant_client.collection_exists(QDRANT_COLLECTION_NAMES[0]):
-        print(f"Creating collection {QDRANT_COLLECTION_NAMES[0]}")
-        qdrant_client.create_collection(
-            collection_name=QDRANT_COLLECTION_NAMES[0],
-            vectors_config={
-                "Input_Language_Vector": VectorParams(
-                    size=EMBEDDING_DIM, distance=Distance.COSINE
-                ),
-                "Input_Vector": VectorParams(
-                    size=EMBEDDING_DIM, distance=Distance.COSINE
-                ),
-                "Translation_Language_Vector": VectorParams(
-                    size=EMBEDDING_DIM, distance=Distance.COSINE
-                ),
-                "Translation_Vector": VectorParams(
-                    size=EMBEDDING_DIM, distance=Distance.COSINE
-                ),
-            },
-        )
-
-    else:
-        print(f"Collection {QDRANT_COLLECTION_NAMES[0]} exists")
-
-    if not qdrant_client.collection_exists(QDRANT_COLLECTION_NAMES[1]):
-        print(f"Creating collection {QDRANT_COLLECTION_NAMES[1]}")
-        qdrant_client.create_collection(
-            collection_name=QDRANT_COLLECTION_NAMES[1],
-            vectors_config={
-                "Input_Language_Vector": VectorParams(
-                    size=EMBEDDING_DIM, distance=Distance.COSINE
-                ),
-                "Input_Text_Vector": VectorParams(
-                    size=EMBEDDING_DIM, distance=Distance.COSINE
-                ),
-                "Correction_Vector": VectorParams(
-                    size=EMBEDDING_DIM, distance=Distance.COSINE
-                ),
-                "Diff_Words_Vector": VectorParams(
-                    size=EMBEDDING_DIM, distance=Distance.COSINE
-                ),
-                "Grammar_Rules_Vector": VectorParams(
-                    size=EMBEDDING_DIM, distance=Distance.COSINE
-                ),
-            },
-        )
-
-    else:
-        print(f"Collection {QDRANT_COLLECTION_NAMES[1]} exists")
+    for name in QDRANT_COLLECTION_NAMES:
+        if not qdrant_client.collection_exists(name):
+            if name == QDRANT_COLLECTION_NAMES[0]:
+                config = {
+                    "Input_Language_Vector": VectorParams(
+                        size=EMBEDDING_DIM, distance=Distance.COSINE
+                    ),
+                    "Input_Vector": VectorParams(
+                        size=EMBEDDING_DIM, distance=Distance.COSINE
+                    ),
+                    "Translation_Language_Vector": VectorParams(
+                        size=EMBEDDING_DIM, distance=Distance.COSINE
+                    ),
+                    "Translation_Vector": VectorParams(
+                        size=EMBEDDING_DIM, distance=Distance.COSINE
+                    ),
+                }
+            elif name == QDRANT_COLLECTION_NAMES[1]:
+                config = {
+                    "Input_Language_Vector": VectorParams(
+                        size=EMBEDDING_DIM, distance=Distance.COSINE
+                    ),
+                    "Input_Text_Vector": VectorParams(
+                        size=EMBEDDING_DIM, distance=Distance.COSINE
+                    ),
+                    "Correction_Vector": VectorParams(
+                        size=EMBEDDING_DIM, distance=Distance.COSINE
+                    ),
+                    "Diff_Words_Vector": VectorParams(
+                        size=EMBEDDING_DIM, distance=Distance.COSINE
+                    ),
+                    "Grammar_Rules_Vector": VectorParams(
+                        size=EMBEDDING_DIM, distance=Distance.COSINE
+                    ),
+                }
+            else:
+                config = {
+                    "Input_Language_Vector": VectorParams(
+                        size=EMBEDDING_DIM, distance=Distance.COSINE
+                    ),
+                    "Transcription_Vector": VectorParams(
+                        size=EMBEDDING_DIM, distance=Distance.COSINE
+                    ),
+                    "Translation_Language_Vector": VectorParams(
+                        size=EMBEDDING_DIM, distance=Distance.COSINE
+                    ),
+                    "Translation_Vector": VectorParams(
+                        size=EMBEDDING_DIM, distance=Distance.COSINE
+                    ),
+                }
+            qdrant_client.create_collection(collection_name=name, vectors_config=config)
 
 
 def add_translation_to_db(input_language, input, translation_language, translation):
     qdrant_client = get_qdrant_client()
-
     points_count = qdrant_client.count(
         collection_name=QDRANT_COLLECTION_NAMES[0], exact=True
     )
-
     qdrant_client.upsert(
         collection_name=QDRANT_COLLECTION_NAMES[0],
         points=[
@@ -335,13 +353,48 @@ def add_translation_to_db(input_language, input, translation_language, translati
     )
 
 
+def add_vocabulary_to_db(input_language, words_list, translation_language="English"):
+    qdrant_client = get_qdrant_client()
+    for item in words_list:
+        points_count = qdrant_client.count(
+            collection_name=QDRANT_COLLECTION_NAMES[0], exact=True
+        )
+        if isinstance(item, dict):
+            word = item.get("word", "").strip()
+            translation = item.get("translation", "").strip()
+        else:
+            word = item.word.strip()
+            translation = item.translation.strip()
+
+        qdrant_client.upsert(
+            collection_name=QDRANT_COLLECTION_NAMES[0],
+            points=[
+                PointStruct(
+                    id=points_count.count + 1,
+                    vector={
+                        "Input_Language_Vector": get_embedding(input_language),
+                        "Input_Vector": get_embedding(word),
+                        "Translation_Language_Vector": get_embedding(
+                            translation_language
+                        ),
+                        "Translation_Vector": get_embedding(translation),
+                    },
+                    payload={
+                        "Input_Text_Language": input_language,
+                        "Input_Text": word,
+                        "Translation_Language": translation_language,
+                        "Translation": translation,
+                    },
+                )
+            ],
+        )
+
+
 def add_correction_to_db(input_language, input, correction, diff_words, grammar_rules):
     qdrant_client = get_qdrant_client()
-
     points_count = qdrant_client.count(
         collection_name=QDRANT_COLLECTION_NAMES[1], exact=True
     )
-
     qdrant_client.upsert(
         collection_name=QDRANT_COLLECTION_NAMES[1],
         points=[
@@ -366,216 +419,256 @@ def add_correction_to_db(input_language, input, correction, diff_words, grammar_
     )
 
 
+def add_audio_translation_to_db(
+    input_language, transcription, translation_language, translation
+):
+    qdrant_client = get_qdrant_client()
+    points_count = qdrant_client.count(
+        collection_name=QDRANT_COLLECTION_NAMES[2], exact=True
+    )
+    qdrant_client.upsert(
+        collection_name=QDRANT_COLLECTION_NAMES[2],
+        points=[
+            PointStruct(
+                id=points_count.count + 1,
+                vector={
+                    "Input_Language_Vector": get_embedding(input_language),
+                    "Transcription_Vector": get_embedding(transcription),
+                    "Translation_Language_Vector": get_embedding(translation_language),
+                    "Translation_Vector": get_embedding(translation),
+                },
+                payload={
+                    "Input_Language": input_language,
+                    "Transcription": transcription,
+                    "Translation_Language": translation_language,
+                    "Translation": translation,
+                },
+            )
+        ],
+    )
+
+
 def list_translations(query=None):
     qdrant_client = get_qdrant_client()
-
     if not query:
         translations_from_db = qdrant_client.scroll(
             collection_name=QDRANT_COLLECTION_NAMES[0], limit=10
         )[0]
-
-        translations_results = []
-
-        for translation_from_db in translations_from_db:
-            translations_results.append(
+        results = []
+        for item in translations_from_db:
+            results.append(
                 {
-                    "Provided Input's Language": translation_from_db.payload[
-                        "Input_Text_Language"
-                    ],
-                    "Provided Input": translation_from_db.payload["Input_Text"],
-                    "Translation Language": translation_from_db.payload[
-                        "Translation_Language"
-                    ],
-                    "Translation": translation_from_db.payload["Translation"],
+                    "Input_Language": item.payload.get("Input_Text_Language"),
+                    "Input_Text": item.payload.get("Input_Text"),
+                    "Target_Language": item.payload.get("Translation_Language"),
+                    "Translation": item.payload.get("Translation"),
                 }
             )
-
-        df_translations = pd.DataFrame(translations_results)
-
-        return df_translations
-
+        return pd.DataFrame(results)
     else:
-        translations_from_db = qdrant_client.search(
+        search_result = qdrant_client.search(
             collection_name=QDRANT_COLLECTION_NAMES[0],
             query_vector=("Input_Vector", get_embedding(query)),
             limit=10,
         )
-
-        translations_results_semantic = []
-
-        for translation_from_db in translations_from_db:
-            translations_results_semantic.append(
+        results = []
+        for item in search_result:
+            results.append(
                 {
-                    "Similarity": round(translation_from_db.score, 2),
-                    "Input Text Language": translation_from_db.payload[
-                        "Input_Text_Language"
-                    ],
-                    "Input Text": translation_from_db.payload["Input_Text"],
-                    "Translation Language": translation_from_db.payload[
-                        "Translation_Language"
-                    ],
-                    "Translation": translation_from_db.payload["Translation"],
+                    "Similarity": round(item.score, 2),
+                    "Input_Language": item.payload.get("Input_Text_Language"),
+                    "Input_Text": item.payload.get("Input_Text"),
+                    "Target_Language": item.payload.get("Translation_Language"),
+                    "Translation": item.payload.get("Translation"),
                 }
             )
-
-        df_translations_semantic = pd.DataFrame(translations_results_semantic)
-
-        return df_translations_semantic
+        return pd.DataFrame(results)
 
 
 def list_corrections(query=None):
     qdrant_client = get_qdrant_client()
-
     if not query:
         corrections_from_db = qdrant_client.scroll(
             collection_name=QDRANT_COLLECTION_NAMES[1], limit=10
         )[0]
-
-        correction_results = []
-
-        for correction_from_db in corrections_from_db:
-            correction_results.append(
+        results = []
+        for item in corrections_from_db:
+            results.append(
                 {
-                    "Provided Input's Language": correction_from_db.payload[
-                        "Input_Language"
-                    ],
-                    "Provided Input": correction_from_db.payload["Input_Text"],
-                    "Correction": correction_from_db.payload["Correction"],
-                    "Difficult Words": correction_from_db.payload["Diff_Words"],
-                    "Grammar Rules": correction_from_db.payload["Grammar_Rules"],
+                    "Input_Language": item.payload.get("Input_Language"),
+                    "Input_Text": item.payload.get("Input_Text"),
+                    "Correction": item.payload.get("Correction"),
+                    "Difficult_Words": item.payload.get("Diff_Words"),
+                    "Grammar_Rules": item.payload.get("Grammar_Rules"),
                 }
             )
-
-        df_corrections = pd.DataFrame(correction_results)
-
-        return df_corrections
-
+        return pd.DataFrame(results)
     else:
-        corrections_from_db = qdrant_client.search(
+        search_result = qdrant_client.search(
             collection_name=QDRANT_COLLECTION_NAMES[1],
             query_vector=("Input_Text_Vector", get_embedding(query)),
             limit=10,
         )
-
-        corrections_results_semantic = []
-
-        for correction_from_db in corrections_from_db:
-            corrections_results_semantic.append(
+        results = []
+        for item in search_result:
+            results.append(
                 {
-                    "Similarity": round(correction_from_db.score, 2),
-                    "Provided Input's Language": correction_from_db.payload[
-                        "Input_Language"
-                    ],
-                    "Provided Input": correction_from_db.payload["Input_Text"],
-                    "Correction": correction_from_db.payload["Correction"],
-                    "Difficult Words": correction_from_db.payload["Diff_Words"],
-                    "Grammar Rules": correction_from_db.payload["Grammar_Rules"],
+                    "Similarity": round(item.score, 2),
+                    "Input_Language": item.payload.get("Input_Language"),
+                    "Input_Text": item.payload.get("Input_Text"),
+                    "Correction": item.payload.get("Correction"),
+                    "Difficult_Words": item.payload.get("Diff_Words"),
+                    "Grammar_Rules": item.payload.get("Grammar_Rules"),
                 }
             )
-
-        df_corrections_semantic = pd.DataFrame(corrections_results_semantic)
-
-        return df_corrections_semantic
+        return pd.DataFrame(results)
 
 
-###################################
-# TEXT TRANSLATION SESSION STATES #
-###################################
+def list_audio_translations(query=None):
+    qdrant_client = get_qdrant_client()
+    if not query:
+        audio_from_db = qdrant_client.scroll(
+            collection_name=QDRANT_COLLECTION_NAMES[2], limit=10
+        )[0]
+        results = []
+        for item in audio_from_db:
+            results.append(
+                {
+                    "Input_Language": item.payload.get("Input_Language"),
+                    "Transcription": item.payload.get("Transcription"),
+                    "Target_Language": item.payload.get("Translation_Language"),
+                    "Translation": item.payload.get("Translation"),
+                }
+            )
+        return pd.DataFrame(results)
+    else:
+        search_result = qdrant_client.search(
+            collection_name=QDRANT_COLLECTION_NAMES[2],
+            query_vector=("Transcription_Vector", get_embedding(query)),
+            limit=10,
+        )
+        results = []
+        for item in search_result:
+            results.append(
+                {
+                    "Similarity": round(item.score, 2),
+                    "Input_Language": item.payload.get("Input_Language"),
+                    "Transcription": item.payload.get("Transcription"),
+                    "Target_Language": item.payload.get("Translation_Language"),
+                    "Translation": item.payload.get("Translation"),
+                }
+            )
+        return pd.DataFrame(results)
 
+
+def get_quiz_data(input_lang, output_lang):
+    qdrant_client = get_qdrant_client()
+    points, _ = qdrant_client.scroll(
+        collection_name=QDRANT_COLLECTION_NAMES[0], limit=1000, with_payload=True
+    )
+    candidates = []
+    for p in points:
+        payload = p.payload
+        text = payload.get("Input_Text", "")
+        if len(text.split()) <= 4:
+            if (
+                payload.get("Input_Text_Language") == input_lang
+                and payload.get("Translation_Language") == output_lang
+            ):
+                candidates.append(
+                    {"question": text, "answer": payload.get("Translation")}
+                )
+    return candidates
+
+
+##################
+# SESSION STATES #
+##################
+
+# --- Text Translation ---
 if "TT_input_language" not in st.session_state:
     st.session_state["TT_input_language"] = ""
-
 if "TT_output_language" not in st.session_state:
     st.session_state["TT_output_language"] = ""
-
 if "TT_detected_language" not in st.session_state:
     st.session_state["TT_detected_language"] = ""
-
 if "TT_translate_text_input" not in st.session_state:
     st.session_state["TT_translate_text_input"] = ""
-
 if "TT_translate_text_output" not in st.session_state:
     st.session_state["TT_translate_text_output"] = ""
+if "TT_audio_in" not in st.session_state:
+    st.session_state["TT_audio_in"] = None
+if "TT_audio_out" not in st.session_state:
+    st.session_state["TT_audio_out"] = None
 
-
-####################################
-# AUDIO TRANSLATION SESSION STATES #
-####################################
-
+# --- Audio Translation ---
 if "TA_output_language" not in st.session_state:
     st.session_state["TA_output_language"] = ""
-
 if "TA_input_language" not in st.session_state:
     st.session_state["TA_input_language"] = ""
-
 if "TA_input_transcription" not in st.session_state:
     st.session_state["TA_input_transcription"] = ""
-
 if "TA_output_text" not in st.session_state:
     st.session_state["TA_output_text"] = ""
+if "TA_audio_out" not in st.session_state:
+    st.session_state["TA_audio_out"] = None
 
-
-##################################
-# TEXT CORRECTION SESSION STATES #
-##################################
-
+# --- Text Correction ---
 if "CT_input_language" not in st.session_state:
     st.session_state["CT_input_language"] = ""
-
 if "CT_input_text" not in st.session_state:
     st.session_state["CT_input_text"] = ""
-
 if "CT_output_text" not in st.session_state:
     st.session_state["CT_output_text"] = ""
-
 if "CT_diff_words" not in st.session_state:
     st.session_state["CT_diff_words"] = ""
-
 if "CT_grammar_rules" not in st.session_state:
     st.session_state["CT_grammar_rules"] = ""
+if "CT_audio_out" not in st.session_state:
+    st.session_state["CT_audio_out"] = None
 
-
-####################################
-# SPEECH CORRECTION SESSION STATES #
-####################################
-
+# --- Speech Correction ---
 if "CS_input_language" not in st.session_state:
     st.session_state["CS_input_language"] = ""
-
 if "CS_input_speech_as_text" not in st.session_state:
     st.session_state["CS_input_speech_as_text"] = ""
-
 if "CS_output_as_text" not in st.session_state:
     st.session_state["CS_output_as_text"] = ""
-
 if "CS_diff_words" not in st.session_state:
     st.session_state["CS_diff_words"] = ""
-
 if "CS_grammar_rules" not in st.session_state:
     st.session_state["CS_grammar_rules"] = ""
+if "CS_audio_out" not in st.session_state:
+    st.session_state["CS_audio_out"] = None
 
+# --- Quiz ---
+if "quiz_active" not in st.session_state:
+    st.session_state["quiz_active"] = False
+if "quiz_questions" not in st.session_state:
+    st.session_state["quiz_questions"] = []
+if "quiz_current_index" not in st.session_state:
+    st.session_state["quiz_current_index"] = 0
+if "quiz_score" not in st.session_state:
+    st.session_state["quiz_score"] = 0
+if "quiz_submitted" not in st.session_state:
+    st.session_state["quiz_submitted"] = False
+if "quiz_finished_final" not in st.session_state:
+    st.session_state["quiz_finished_final"] = False
+if "quiz_mode" not in st.session_state:
+    st.session_state["quiz_mode"] = "Written Answer"
 
-#########################
-# API KEY SESSION STATE #
-#########################
-
+# --- API Key ---
 if "OPENAI_API_KEY" not in st.session_state:
-    st.session_state["OPENAI_API_KEY"] = ""
+    st.session_state["OPENAI_API_KEY"] = os.getenv("OPENAI_API_KEY", "")
 
-
-######################
-# ASKING FOR API-KEY #
-######################
-
+# Ask for API Key if not present
 if not st.session_state.get("OPENAI_API_KEY"):
     st.info("Enter your OpenAI API key")
     st.session_state["OPENAI_API_KEY"] = st.text_input(
         "OpenAI API Key", type="password"
     )
-
     if st.session_state["OPENAI_API_KEY"]:
         st.rerun()
-
     st.stop()
 
 
@@ -587,21 +680,30 @@ st.title("Language Helper")
 
 assure_qdrant_collections_exist()
 
-text_tr, audio_tr, text_cor, speech_cor, search_translation, search_correction = (
-    st.tabs(
-        [
-            "Translate Text",
-            "Translate Audio",
-            "Correct Text",
-            "Record and Correct Speech",
-            "Search Translation",
-            "Search Correction",
-        ]
-    )
+(
+    text_tr,
+    audio_tr,
+    text_cor,
+    speech_cor,
+    quiz_tab,
+    search_translation,
+    search_audio,
+    search_correction,
+) = st.tabs(
+    [
+        "Translate Text",
+        "Translate Audio",
+        "Correct Text",
+        "Record and Correct Speech",
+        "Vocabulary Quiz",
+        "Search Translation",
+        "Search Audio Translations",
+        "Search Correction",
+    ]
 )
 
 
-# Text translation #
+# 1. Text Translation
 with text_tr:
     c0, c1 = st.columns(2)
     translate_button = st.button("Translate Text", use_container_width=True)
@@ -627,58 +729,49 @@ with text_tr:
         )
 
     if translate_button:
-
         if st.session_state["TT_translate_text_input"]:
             st.session_state["TT_detected_language"] = check_language(
                 st.session_state["TT_translate_text_input"]
             )
-            language_match = (
+            if (
                 st.session_state["TT_detected_language"]
                 == st.session_state["TT_input_language"]
-            )
+            ):
 
-            if language_match:
-                with c0:
-                    input_text_audio = text_to_speech(
-                        st.session_state["TT_translate_text_input"]
-                    )
-                    st.audio(input_text_audio)
+                st.session_state["TT_audio_in"] = text_to_speech(
+                    st.session_state["TT_translate_text_input"]
+                )
 
-                with c1:
-                    st.session_state["TT_translate_text_output"] = translate_text(
-                        st.session_state["TT_translate_text_input"],
-                        st.session_state["TT_input_language"],
-                        st.session_state["TT_output_language"],
-                    )
-                    translation_audio = text_to_speech(
-                        st.session_state["TT_translate_text_output"]
-                    )
-                    st.text_area(
-                        "Translation",
-                        height=150,
-                        value=st.session_state["TT_translate_text_output"],
-                    )
-                    st.audio(translation_audio)
+                st.session_state["TT_translate_text_output"] = translate_text(
+                    st.session_state["TT_translate_text_input"],
+                    st.session_state["TT_input_language"],
+                    st.session_state["TT_output_language"],
+                )
 
+                st.session_state["TT_audio_out"] = text_to_speech(
+                    st.session_state["TT_translate_text_output"]
+                )
                 st.toast("Text Has Been Translated!")
-
             else:
-                with c1:
-                    st.text_area("Translation", height=150, value="")
-
                 st.warning(
                     f"Input and Detected Language Don't Match. Switch Language Input to {st.session_state['TT_detected_language']}"
                 )
-
         else:
-            with c1:
-                st.text_area("Translation", height=150, value="")
-
             st.warning("Enter the Text")
 
-    else:
+    # WIDOK (renderowany zawsze)
+    if st.session_state.get("TT_translate_text_output"):
+        with c0:
+            if st.session_state.get("TT_audio_in"):
+                st.audio(st.session_state["TT_audio_in"], format="audio/mpeg")
         with c1:
-            st.text_area("Translation", height=150, value="")
+            st.text_area(
+                "Translation",
+                height=150,
+                value=st.session_state["TT_translate_text_output"],
+            )
+            if st.session_state.get("TT_audio_out"):
+                st.audio(st.session_state["TT_audio_out"], format="audio/mpeg")
 
     if save_button:
         if st.session_state["TT_translate_text_output"]:
@@ -688,26 +781,23 @@ with text_tr:
                 st.session_state["TT_output_language"],
                 st.session_state["TT_translate_text_output"],
             )
-
             st.toast("Translation Has Been Saved!")
             st.session_state["TT_translate_text_output"] = ""
-
+            st.session_state["TT_audio_in"] = None
+            st.session_state["TT_audio_out"] = None
         else:
             st.warning("No Translation to Save")
 
 
-# Audio translation #
+# 2. Audio Translation
 with audio_tr:
     st.session_state["TA_output_language"] = st.selectbox(
-        "Select Desired Output Language",
-        LANGUAGES_OUTPUT,
-        help="Choose the language you want translate to",
+        "Select Desired Output Language", LANGUAGES_OUTPUT
     )
     uploaded_file = st.file_uploader("Upload a file", type=["mp3", "wav"])
 
     if uploaded_file:
         raw_audio_bytes = get_audio_bytes_from_file(uploaded_file)
-
         st.audio(raw_audio_bytes)
 
         translate_audio_button = st.button(
@@ -720,12 +810,19 @@ with audio_tr:
             (
                 st.session_state["TA_output_text"],
                 st.session_state["TA_input_language"],
+                difficult_words_audio,
             ) = translate_transcription(
                 st.session_state["TA_input_transcription"],
                 st.session_state["TA_output_language"],
             )
-            translated_audio = text_to_speech(st.session_state["TA_output_text"])
 
+            st.session_state["TA_raw_diff_words"] = difficult_words_audio
+            st.session_state["TA_audio_out"] = text_to_speech(
+                st.session_state["TA_output_text"]
+            )
+
+        # WIDOK
+        if st.session_state.get("TA_output_text"):
             with st.container(border=True):
                 st.header(
                     f"Provided audio is in {st.session_state['TA_input_language']}"
@@ -733,28 +830,46 @@ with audio_tr:
                 st.text_area(
                     "Audio Translation", value=st.session_state["TA_output_text"]
                 )
-                st.audio(translated_audio)
+
+                if st.session_state.get("TA_raw_diff_words"):
+                    with st.expander("Extracted Vocabulary"):
+                        for w in st.session_state["TA_raw_diff_words"]:
+                            st.write(f"**{w.word}**: {w.translation} ({w.definition})")
+
+                if st.session_state.get("TA_audio_out"):
+                    st.audio(st.session_state["TA_audio_out"], format="audio/mpeg")
 
         if save_button:
             if st.session_state["TA_output_text"]:
-                add_translation_to_db(
+                add_audio_translation_to_db(
                     st.session_state["TA_input_language"],
                     st.session_state["TA_input_transcription"],
                     st.session_state["TA_output_language"],
                     st.session_state["TA_output_text"],
                 )
-                st.toast("Translation Has Been Saved!")
-                st.session_state["TA_output_text"] = ""
 
+                if (
+                    "TA_raw_diff_words" in st.session_state
+                    and st.session_state["TA_raw_diff_words"]
+                ):
+                    add_vocabulary_to_db(
+                        st.session_state["TA_input_language"],
+                        st.session_state["TA_raw_diff_words"],
+                        st.session_state["TA_output_language"],
+                    )
+                    st.toast("Vocabulary added to Quiz!")
+
+                st.toast("Audio Translation Has Been Saved!")
+                st.session_state["TA_output_text"] = ""
+                st.session_state["TA_audio_out"] = None
             else:
                 st.warning("No Translation to Save")
 
 
-# Text correction #
+# 3. Text Correction
 with text_cor:
-
     st.session_state["CT_input_language"] = st.selectbox(
-        "Select Language", LANGUAGES_INPUT, help="Select input language"
+        "Select Language", LANGUAGES_INPUT, key="ct_lang"
     )
     st.session_state["CT_input_text"] = st.text_area(
         "Enter the Sentence", height=75
@@ -764,74 +879,69 @@ with text_cor:
     save_button = st.button("Save Correction", use_container_width=True)
 
     if correct_button:
-
         if st.session_state["CT_input_text"]:
             detected_language = check_language(st.session_state["CT_input_text"])
-            language_match = st.session_state["CT_input_language"] == detected_language
-
-            if language_match:
-                is_grammatically_correct = check_grammar(
+            if st.session_state["CT_input_language"] == detected_language:
+                if check_grammar(
                     st.session_state["CT_input_text"],
                     st.session_state["CT_input_language"],
-                )
-
-                if is_grammatically_correct:
+                ):
                     st.success("The Sentence is Correct")
-
                 else:
-                    st.session_state["CT_output_text"], difficult_words, grammars = (
+                    (st.session_state["CT_output_text"], diff_words, grammars) = (
                         get_corr_words_and_grammar(
                             st.session_state["CT_input_text"],
                             st.session_state["CT_input_language"],
                         )
                     )
 
-                    sentence_audio = text_to_speech(st.session_state["CT_output_text"])
+                    st.session_state["CT_raw_diff_words"] = diff_words
 
-                    words_with_expl = ""
-                    grammar_with_expl = ""
-
-                    for word in difficult_words:
-                        words_with_expl += f"""'{word['word'].capitalize()}' : {word['w_explanation'].capitalize()}\n"""
-
-                    if words_with_expl == "":
-                        words_with_expl = "No tricky words were detected."
-
-                    st.session_state["CT_diff_words"] = words_with_expl
-
-                    for grammar in grammars:
-                        grammar_with_expl += (
-                            f"""'{grammar["rule"]}' : {grammar["r_explanation"]}\n"""
+                    words_expl = (
+                        "".join(
+                            [
+                                f"'{w['word'].capitalize()}' : {w['translation']} ({w['definition']})\n"
+                                for w in diff_words
+                            ]
                         )
+                        or "No tricky words."
+                    )
+                    gram_expl = (
+                        "".join(
+                            [
+                                f"'{g['rule']}' : {g['r_explanation']}\n"
+                                for g in grammars
+                            ]
+                        )
+                        or "No tricky rules."
+                    )
 
-                    if grammar_with_expl == "":
-                        grammar_with_expl = "No tricky words were detected."
+                    st.session_state["CT_diff_words"] = words_expl
+                    st.session_state["CT_grammar_rules"] = gram_expl
 
-                    st.session_state["CT_grammar_rules"] = grammar_with_expl
-
-                    with st.container(border=True):
-                        st.header("Correct Form")
-                        st.text_area("", value=st.session_state["CT_output_text"])
-
-                        with st.expander("Tricky Words Explanation"):
-                            st.header("Tricky Words Explanation")
-                            st.text_area("", value=st.session_state["CT_diff_words"])
-
-                        with st.expander("Grammar Explanation"):
-                            st.header("Grammar Explanation")
-                            st.text_area("", value=st.session_state["CT_grammar_rules"])
-
-                        with st.expander("Pronunciation"):
-                            st.header("Pronunciation")
-                            st.audio(sentence_audio)
-                            st.toast("Content Has Been Corrected!")
+                    st.session_state["CT_audio_out"] = text_to_speech(
+                        st.session_state["CT_output_text"]
+                    )
+                    st.toast("Content Has Been Corrected!")
             else:
                 st.warning(
-                    f"Input and Detected Language Don't Match. Switch Language Input to {detected_language}"
+                    f"Input and Detected Language Don't Match. Switch to {detected_language}"
                 )
-
         else:
             st.warning("Enter the Content")
+
+    # WIDOK
+    if st.session_state.get("CT_output_text"):
+        with st.container(border=True):
+            st.header("Correct Form")
+            st.text_area("", value=st.session_state["CT_output_text"])
+            with st.expander("Tricky Words"):
+                st.text_area("", value=st.session_state["CT_diff_words"])
+            with st.expander("Grammar"):
+                st.text_area("", value=st.session_state["CT_grammar_rules"])
+            with st.expander("Pronunciation"):
+                if st.session_state.get("CT_audio_out"):
+                    st.audio(st.session_state["CT_audio_out"], format="audio/mpeg")
 
     if save_button:
         if st.session_state["CT_output_text"]:
@@ -843,14 +953,25 @@ with text_cor:
                 st.session_state["CT_grammar_rules"],
             )
 
+            if (
+                "CT_raw_diff_words" in st.session_state
+                and st.session_state["CT_raw_diff_words"]
+            ):
+                add_vocabulary_to_db(
+                    st.session_state["CT_input_language"],
+                    st.session_state["CT_raw_diff_words"],
+                    "English",
+                )
+                st.toast("Vocabulary from correction added to Quiz!")
+
             st.toast("Correction Has Been Saved!")
             st.session_state["CT_output_text"] = ""
-
+            st.session_state["CT_audio_out"] = None
         else:
             st.warning("No Correction to Save")
 
 
-# Speech correction #
+# 4. Record and Correct Speech
 with speech_cor:
     check_audio_correction_button = st.button("Check and Fix", use_container_width=True)
     save_button = st.button("Save Speech Correction", use_container_width=True)
@@ -860,16 +981,13 @@ with speech_cor:
     )
 
     c0, c1 = st.columns([0.32, 0.68])
-
     with c0:
         input_speech = audiorecorder(
             start_prompt="Record Sentence", stop_prompt="Stop Recording Sentence"
         )
 
-    if not input_speech:
-
-        if check_audio_correction_button:
-            st.warning(f"Enter the Content")
+    if not input_speech and check_audio_correction_button:
+        st.warning("Enter the Content")
 
     if input_speech:
         with c1:
@@ -882,73 +1000,69 @@ with speech_cor:
         )
 
         language_detected = check_language(st.session_state["CS_input_speech_as_text"])
-        language_match = language_detected == st.session_state["CS_input_language"]
 
         if check_audio_correction_button:
-
-            if language_match:
-                is_grammatically_correct = check_grammar(
+            if language_detected == st.session_state["CS_input_language"]:
+                if check_grammar(
                     st.session_state["CS_input_speech_as_text"],
                     st.session_state["CS_input_language"],
-                )
-
-                if is_grammatically_correct:
+                ):
                     st.success("Sentence is Correct!")
-
                 else:
-                    sentence, difficult_words, grammars = get_corr_words_and_grammar(
+                    sentence, diff_words, grammars = get_corr_words_and_grammar(
                         st.session_state["CS_input_speech_as_text"],
                         st.session_state["CS_input_language"],
                     )
 
-                    words_with_expl = ""
-                    grammar_with_expl = ""
+                    st.session_state["CS_raw_diff_words"] = diff_words
 
-                    for word in difficult_words:
-                        words_with_expl += f"""'{word['word'].capitalize()}' : {word['w_explanation'].capitalize()}\n"""
-
-                    if words_with_expl == "":
-                        words_with_expl = "No tricky words were detected."
-
-                    for grammar in grammars:
-                        grammar_with_expl += (
-                            f"""'{grammar["rule"]}' : {grammar["r_explanation"]}\n"""
+                    words_expl = (
+                        "".join(
+                            [
+                                f"'{w['word'].capitalize()}' : {w['translation']} ({w['definition']})\n"
+                                for w in diff_words
+                            ]
                         )
-
-                    if grammar_with_expl == "":
-                        grammar_with_expl = "No tricky grammar rules were detected."
+                        or "No tricky words."
+                    )
+                    gram_expl = (
+                        "".join(
+                            [
+                                f"'{g['rule']}' : {g['r_explanation']}\n"
+                                for g in grammars
+                            ]
+                        )
+                        or "No tricky rules."
+                    )
 
                     st.session_state["CS_output_as_text"] = sentence
-                    st.session_state["CS_diff_words"] = words_with_expl
-                    st.session_state["CS_grammar_rules"] = grammar_with_expl
+                    st.session_state["CS_diff_words"] = words_expl
+                    st.session_state["CS_grammar_rules"] = gram_expl
 
-                    with st.container(border=True):
-                        st.header("Correct Form")
-                        st.text_area("", value=st.session_state["CS_output_as_text"])
-
-                        with st.expander("Tricky Words"):
-                            st.header("Tricky Words and Explanation")
-                            st.text_area("", value=st.session_state["CS_diff_words"])
-
-                        with st.expander("Grammar"):
-                            st.header("Grammar Explanation")
-                            st.text_area("", value=st.session_state["CS_grammar_rules"])
-
-                        with st.expander("Pronunciation"):
-                            st.header("Pronunciation")
-                            output_audio = text_to_speech(
-                                st.session_state["CS_output_as_text"]
-                            )
-                            st.audio(output_audio)
+                    st.session_state["CS_audio_out"] = text_to_speech(
+                        st.session_state["CS_output_as_text"]
+                    )
 
             else:
                 st.warning(
-                    f"Input and Detected Language Don't Match. Switch Language Input to {language_detected}"
+                    f"Input and Detected Language Don't Match. Switch to {language_detected}"
                 )
 
-    # Qdrant #
+    # WIDOK
+    if st.session_state.get("CS_output_as_text"):
+        with st.container(border=True):
+            st.header("Correct Form")
+            st.text_area("", value=st.session_state["CS_output_as_text"])
+            with st.expander("Tricky Words"):
+                st.text_area("", value=st.session_state["CS_diff_words"])
+            with st.expander("Grammar"):
+                st.text_area("", value=st.session_state["CS_grammar_rules"])
+            with st.expander("Pronunciation"):
+                if st.session_state.get("CS_audio_out"):
+                    st.audio(st.session_state["CS_audio_out"], format="audio/mpeg")
+
     if save_button:
-        if st.session_state["CS_output_as_text"]:
+        if st.session_state.get("CS_output_as_text"):
             add_correction_to_db(
                 st.session_state["CS_input_language"],
                 st.session_state["CS_input_speech_as_text"],
@@ -957,95 +1071,255 @@ with speech_cor:
                 st.session_state["CS_grammar_rules"],
             )
 
-            st.toast("Correctionion Has Been Saved!")
+            if "CS_raw_diff_words" in st.session_state:
+                add_vocabulary_to_db(
+                    st.session_state["CS_input_language"],
+                    st.session_state["CS_raw_diff_words"],
+                    "English",
+                )
+                st.toast("Difficult words added to your Quiz database!")
+
+            st.toast("Correction saved!")
             st.session_state["CS_output_as_text"] = ""
             st.session_state["CS_input_speech_as_text"] = ""
+            st.session_state["CS_audio_out"] = None
         else:
             st.warning("No Correction to Save")
 
 
-# Search translation #
+# 5. Quiz Tab
+with quiz_tab:
+    st.header("Vocabulary & Phrase Quiz")
+
+    if not st.session_state.get("quiz_active", False) and not st.session_state.get(
+        "quiz_finished_final", False
+    ):
+        st.subheader("Quiz Settings")
+        c1, c2 = st.columns(2)
+        with c1:
+            q_src = st.selectbox("From Language", LANGUAGES_INPUT, key="q_lang_in")
+        with c2:
+            q_tgt = st.selectbox("To Language", LANGUAGES_OUTPUT, key="q_lang_out")
+
+        quiz_mode = st.radio(
+            "Select Quiz Mode",
+            ["Written Answer", "Select Translation"],
+            horizontal=True,
+        )
+
+        if q_src == q_tgt:
+            st.error("Source and Target languages must be different.")
+        else:
+            candidates = get_quiz_data(q_src, q_tgt)
+            count = len(candidates)
+            if count < 5:
+                st.warning(
+                    f"Not enough items ({count}). You need at least 5 short phrases/words."
+                )
+            else:
+                st.success(f"Found {count} items.")
+                num_q = st.slider(
+                    "Select number of questions", 1, min(count, 20), min(count, 5)
+                )
+
+                if st.button("Start Quiz", use_container_width=True):
+                    selected = random.sample(candidates, num_q)
+
+                    if quiz_mode == "Select Translation":
+                        for item in selected:
+                            other = [
+                                c["answer"]
+                                for c in candidates
+                                if c["answer"] != item["answer"]
+                            ]
+                            distractors = random.sample(other, min(3, len(other)))
+                            options = distractors + [item["answer"]]
+                            random.shuffle(options)
+                            item["options"] = options
+
+                    st.session_state["quiz_questions"] = selected
+                    st.session_state["quiz_mode"] = quiz_mode
+                    st.session_state["quiz_current_index"] = 0
+                    st.session_state["quiz_score"] = 0
+                    st.session_state["quiz_active"] = True
+                    st.session_state["quiz_submitted"] = False
+                    st.rerun()
+
+    elif st.session_state.get("quiz_active", False):
+        idx = st.session_state["quiz_current_index"]
+        questions = st.session_state["quiz_questions"]
+        current = questions[idx]
+        mode = st.session_state["quiz_mode"]
+
+        st.write(f"Question {idx + 1} of {len(questions)}")
+        st.progress((idx) / len(questions))
+
+        with st.container(border=True):
+            st.subheader(f"How do you translate: '{current['question']}'?")
+            if st.button("Listen to Question", key=f"q_audio_{idx}"):
+                with st.spinner("Generating..."):
+                    st.audio(text_to_speech(current["question"]), format="audio/mpeg")
+
+            if mode == "Written Answer":
+                user_ans = st.text_input(
+                    "Your answer:",
+                    key=f"input_q_{idx}",
+                    disabled=st.session_state["quiz_submitted"],
+                )
+            else:
+                user_ans = st.radio(
+                    "Choose correct translation:",
+                    current["options"],
+                    key=f"radio_q_{idx}",
+                    disabled=st.session_state["quiz_submitted"],
+                )
+
+            if not st.session_state["quiz_submitted"]:
+                if st.button("Check Answer", use_container_width=True):
+                    st.session_state["quiz_submitted"] = True
+                    st.rerun()
+            else:
+                is_correct = (
+                    user_ans.strip().lower() == current["answer"].strip().lower()
+                )
+                if is_correct:
+                    st.success(f"Correct. Answer: {current['answer']}")
+                    if f"scored_{idx}" not in st.session_state:
+                        st.session_state["quiz_score"] += 1
+                        st.session_state[f"scored_{idx}"] = True
+                else:
+                    st.error(f"Incorrect. Answer: {current['answer']}")
+
+                if st.button("Listen to Answer", key=f"ans_audio_{idx}"):
+                    st.audio(text_to_speech(current["answer"]), format="audio/mpeg")
+
+                if idx + 1 < len(questions):
+                    if st.button("Next Question", use_container_width=True):
+                        st.session_state["quiz_current_index"] += 1
+                        st.session_state["quiz_submitted"] = False
+                        st.rerun()
+                else:
+                    if st.button("Finish Quiz", use_container_width=True):
+                        st.session_state["quiz_active"] = False
+                        st.session_state["quiz_finished_final"] = True
+                        st.rerun()
+
+    elif st.session_state.get("quiz_finished_final", False):
+        st.header("Quiz Results")
+        st.metric(
+            "Final Score",
+            f"{st.session_state['quiz_score']} / {len(st.session_state['quiz_questions'])}",
+        )
+        if st.button("Return to Menu", use_container_width=True):
+            st.session_state["quiz_finished_final"] = False
+            st.session_state["quiz_active"] = False
+            for key in list(st.session_state.keys()):
+                if key.startswith("scored_"):
+                    del st.session_state[key]
+            st.rerun()
+
+
+# 6. Search Translation (Tekstowe - bez audio)
 with search_translation:
-    query = st.text_input("Enter the Translation Query")
-    search = st.button("Search Translation", use_container_width=True)
+    query_tr = st.text_input("Enter Translation Query", key="search_tr_in")
+    search_triggered = st.button(
+        "Search", use_container_width=True, key="search_tr_btn"
+    )
 
-    if search:
-        df_results = list_translations(query)
-
-        if df_results.empty:
-            st.info("No translations found locally.")
+    if search_triggered:
+        df = list_translations(query_tr)
+        if not df.empty:
+            st.session_state["cached_tr_results"] = df.to_dict("records")
         else:
-            st.header("Saved Translations")
+            st.session_state["cached_tr_results"] = []
+            st.info("No translations found.")
 
-            for index, row in df_results.iterrows():
-                with st.container(border=True):
+    if (
+        "cached_tr_results" in st.session_state
+        and st.session_state["cached_tr_results"]
+    ):
+        st.header("Saved Translations")
+        for idx, row in enumerate(st.session_state["cached_tr_results"]):
+            with st.container(border=True):
+                src_lang = row.get("Input_Language")
+                tgt_lang = row.get("Target_Language")
+                st.subheader(f"{src_lang} -> {tgt_lang}")
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.markdown("**Original:**")
+                    st.info(row.get("Input_Text"))
+                with c2:
+                    st.markdown("**Translation:**")
+                    st.success(row.get("Translation"))
 
-                    col_top_1, col_top_2 = st.columns([0.8, 0.2])
-                    with col_top_1:
+# 7. Search Audio Translations (Tekstowe - bez audio)
+with search_audio:
+    query_audio = st.text_input(
+        "Enter Audio Transcription Query", key="search_audio_in"
+    )
+    search_triggered_audio = st.button(
+        "Search", use_container_width=True, key="search_audio_btn"
+    )
 
-                        try:
-                            src = row["Provided Input's Language"]
-                        except KeyError:
-                            src = row["Input Text Language"]
+    if search_triggered_audio:
+        df_audio = list_audio_translations(query_audio)
+        if not df_audio.empty:
+            st.session_state["cached_audio_results"] = df_audio.to_dict("records")
+        else:
+            st.session_state["cached_audio_results"] = []
+            st.info("No audio translations found.")
 
-                        tgt = row["Translation Language"]
-                        st.subheader(f"{src} -> {tgt}")
+    if (
+        "cached_audio_results" in st.session_state
+        and st.session_state["cached_audio_results"]
+    ):
+        st.header("Saved Audio Translations")
+        for idx, row in enumerate(st.session_state["cached_audio_results"]):
+            with st.container(border=True):
+                src_lang = row.get("Input_Language")
+                tgt_lang = row.get("Target_Language")
+                st.subheader(f"{src_lang} -> {tgt_lang}")
 
-                    with col_top_2:
-                        if "Similarity" in row:
-                            st.caption(f"Match: {row['Similarity']}")
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.markdown("**Transcription:**")
+                    st.info(row.get("Transcription"))
+                with c2:
+                    st.markdown("**Translation:**")
+                    st.success(row.get("Translation"))
 
-                    c1, c2 = st.columns(2)
-                    with c1:
-                        st.markdown("**Original Text:**")
-                        st.info(
-                            row["Provided Input"]
-                            if "Provided Input" in row
-                            else row["Input Text"]
-                        )
-
-                    with c2:
-                        st.markdown("**Translation:**")
-                        st.success(row["Translation"])
-
-
-# Search correction #
+# 8. Search Correction (Tekstowe - bez audio)
 with search_correction:
-    query = st.text_input("Enter the Correction Query")
-    search = st.button("Search Correction", use_container_width=True)
+    query_cor = st.text_input("Enter Correction Query", key="search_cor_in")
+    search_triggered_cor = st.button(
+        "Search", use_container_width=True, key="search_cor_btn"
+    )
 
-    if search:
-        df_results = list_corrections(query)
-
-        if df_results.empty:
-            st.info("No corrections found locally.")
+    if search_triggered_cor:
+        df_cor = list_corrections(query_cor)
+        if not df_cor.empty:
+            st.session_state["cached_cor_results"] = df.to_dict("records")
         else:
-            st.header("Saved Corrections")
+            st.session_state["cached_cor_results"] = []
+            st.info("No corrections found.")
 
-            for index, row in df_results.iterrows():
-                with st.container(border=True):
+    if (
+        "cached_cor_results" in st.session_state
+        and st.session_state["cached_cor_results"]
+    ):
+        st.header("Saved Corrections")
+        for idx, row in enumerate(st.session_state["cached_cor_results"]):
+            with st.container(border=True):
+                st.subheader(row.get("Input_Language"))
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.markdown("**Original:**")
+                    st.error(row.get("Input_Text"))
+                with c2:
+                    st.markdown("**Corrected:**")
+                    st.success(row.get("Correction"))
 
-                    col_top_1, col_top_2 = st.columns([0.8, 0.2])
-                    with col_top_1:
-                        st.subheader(row["Provided Input's Language"])
-                    with col_top_2:
-                        if "Similarity" in row:
-                            st.caption(f"Match: {row['Similarity']}")
-
-                    c1, c2 = st.columns(2)
-                    with c1:
-                        st.markdown("**Original Input:**")
-                        st.error(row["Provided Input"])
-
-                    with c2:
-                        st.markdown("**Corrected:**")
-                        st.success(row["Correction"])
-
-                    with st.expander("View Explanations"):
-                        st.markdown("**Difficult Words**")
-                        st.write(row["Difficult Words"])
-
-                        st.divider()
-
-                        st.markdown("**Grammar Rules**")
-                        st.write(row["Grammar Rules"])
+                with st.expander("Explanations"):
+                    st.write(row.get("Difficult_Words"))
+                    st.divider()
+                    st.write(row.get("Grammar_Rules"))
