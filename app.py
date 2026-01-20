@@ -20,7 +20,7 @@ st.markdown(
     """
     <style>
         .block-container {
-            max-width: 60%;
+            max-width: 95%;
             padding-top: 1rem;
             padding-right: 1rem;
             padding-left: 1rem;
@@ -44,12 +44,18 @@ st.markdown(
         }
         
         .alternatives-box {
-            margin-top: 15px;
+            margin-top: 10px;
             padding: 10px;
-            border-top: 1px solid #333;
+            background-color: #f8f9fa; /* Jasne tło dla kontrastu w light mode, w dark mode będzie ok */
+            border-left: 3px solid #4CAF50;
             font-size: 0.9em;
-            color: #888;
-            font-style: italic;
+            color: #333; /* Ciemny tekst */
+            border-radius: 4px;
+        }
+        
+        /* Centrowanie tekstu w fiszkach */
+        .stMarkdown h1, .stMarkdown h2, .stMarkdown h3 {
+            text-align: center !important;
         }
     </style>
 """,
@@ -233,6 +239,7 @@ def get_corr_words_and_grammar(to_correct, input_language):
     )
 
 
+@st.cache_data(show_spinner=False)
 def text_to_speech(text):
     openai_client = get_openai_client()
     speech = openai_client.audio.speech.create(
@@ -382,38 +389,42 @@ def add_translation_to_db(input_language, input, translation_language, translati
 
 
 def add_vocabulary_to_db(input_language, words_list, translation_language="English"):
+    if not words_list:
+        return
     qdrant_client = get_qdrant_client()
     for item in words_list:
         points_count = qdrant_client.count(
             collection_name="translations", exact=True
         ).count
-        word = item.word if hasattr(item, "word") else item["word"]
+        word = item.word if hasattr(item, "word") else item.get("word", "")
         trans = (
-            item.translation if hasattr(item, "translation") else item["translation"]
+            item.translation
+            if hasattr(item, "translation")
+            else item.get("translation", "")
         )
-
-        qdrant_client.upsert(
-            collection_name="translations",
-            points=[
-                models.PointStruct(
-                    id=points_count + 1,
-                    vector={
-                        "Input_Language_Vector": get_embedding(input_language),
-                        "Input_Vector": get_embedding(word),
-                        "Translation_Language_Vector": get_embedding(
-                            translation_language
-                        ),
-                        "Translation_Vector": get_embedding(trans),
-                    },
-                    payload={
-                        "Input_Text_Language": input_language,
-                        "Input_Text": word,
-                        "Translation_Language": translation_language,
-                        "Translation": trans,
-                    },
-                )
-            ],
-        )
+        if word and trans:
+            qdrant_client.upsert(
+                collection_name="translations",
+                points=[
+                    models.PointStruct(
+                        id=points_count + 1,
+                        vector={
+                            "Input_Language_Vector": get_embedding(input_language),
+                            "Input_Vector": get_embedding(word),
+                            "Translation_Language_Vector": get_embedding(
+                                translation_language
+                            ),
+                            "Translation_Vector": get_embedding(trans),
+                        },
+                        payload={
+                            "Input_Text_Language": input_language,
+                            "Input_Text": word,
+                            "Translation_Language": translation_language,
+                            "Translation": trans,
+                        },
+                    )
+                ],
+            )
 
 
 def add_correction_to_db(input_language, input, correction, diff_words, grammar_rules):
@@ -536,13 +547,16 @@ def list_corrections(query=None):
     client = get_qdrant_client()
     if not query:
         results, _ = client.scroll(collection_name="corrections", limit=10)
+        # NAPRAWIONY KLUCZ PONIŻEJ: r.payload["Diff_Words"] zamiast "Difficult_Words"
         return pd.DataFrame(
             [
                 {
                     "Input_Language": r.payload["Input_Language"],
                     "Input_Text": r.payload["Input_Text"],
                     "Correction": r.payload["Correction"],
-                    "Difficult_Words": r.payload["Difficult_Words"],
+                    "Difficult_Words": r.payload.get(
+                        "Diff_Words", "N/A"
+                    ),  # Używamy .get dla bezpieczeństwa
                     "Grammar_Rules": r.payload["Grammar_Rules"],
                 }
                 for r in results
@@ -554,6 +568,7 @@ def list_corrections(query=None):
             query_vector=("Input_Text_Vector", get_embedding(query)),
             limit=10,
         )
+        # NAPRAWIONY KLUCZ PONIŻEJ RÓWNIEŻ
         return pd.DataFrame(
             [
                 {
@@ -561,7 +576,7 @@ def list_corrections(query=None):
                     "Input_Language": r.payload["Input_Language"],
                     "Input_Text": r.payload["Input_Text"],
                     "Correction": r.payload["Correction"],
-                    "Difficult_Words": r.payload["Difficult_Words"],
+                    "Difficult_Words": r.payload.get("Diff_Words", "N/A"),
                     "Grammar_Rules": r.payload["Grammar_Rules"],
                 }
                 for r in search_result
@@ -797,7 +812,7 @@ assure_qdrant_collections_exist()
         "Record & Correct",
         "Vocabulary Quiz",
         "Search Translations",
-        "Search Audio Translations",
+        "Search Audio Translation",
         "Search Corrections",
     ]
 )
@@ -1181,8 +1196,8 @@ with quiz_tab:
                 horizontal=True,
             )
         with c_stat:
-            st.write("")  # Spacer
-            # Custom CSS dla paska (zielony lub żółty), wyrównany do radio buttons
+            st.write("")
+            # Custom CSS dla paska, wyrównany do radio buttons
             color = "#4CAF50" if count >= 3 else "#FFC107"
             bg = "rgba(76, 175, 80, 0.1)" if count >= 3 else "rgba(255, 193, 7, 0.1)"
             text = (
@@ -1200,7 +1215,7 @@ with quiz_tab:
                     border-radius: 5px; 
                     border: 1px solid {color}; 
                     text-align: center; 
-                    margin-top: 28px;
+                    margin-top: 27px; /* Wyrównanie do kropek radio */
                     font-weight: bold;
                 ">
                     {text}
@@ -1262,21 +1277,17 @@ with quiz_tab:
         if mode == "Flashcards":
             with st.container(border=True):
                 st.caption(f"Translate to: {current['direction'].split(' -> ')[1]}")
-                st.markdown(
-                    f"<h2 style='text-align: center;'>{current['question']}</h2>",
-                    unsafe_allow_html=True,
-                )
+                st.markdown(f"## {current['question']}")
 
                 if st.session_state["flashcard_revealed"]:
                     st.divider()
                     st.markdown(
-                        f"<h2 style='text-align: center; color: #4CAF50;'>{current['answer']}</h2>",
+                        f"<h2 style='color: #4CAF50;'>{current['answer']}</h2>",
                         unsafe_allow_html=True,
                     )
 
                     st.audio(text_to_speech(current["answer"]), format="audio/mpeg")
 
-                    # --- SEMANTYCZNE ALTERNATYWY ---
                     with st.spinner("Checking for synonyms..."):
                         alts = get_semantic_alternatives(
                             current["answer"], current["target_lang"]
@@ -1291,7 +1302,7 @@ with quiz_tab:
             else:
                 c_know, c_dontknow = st.columns(2)
                 with c_know:
-                    if st.button("I knew it", use_container_width=True):
+                    if st.button("✅ I knew it", use_container_width=True):
                         st.session_state["flashcard_score"] += 1
                         if idx < len(questions) - 1:
                             st.session_state["quiz_current_index"] += 1
@@ -1305,7 +1316,7 @@ with quiz_tab:
                             st.session_state["quiz_finished_final"] = True
                             st.rerun()
                 with c_dontknow:
-                    if st.button("Didn't know", use_container_width=True):
+                    if st.button("❌ Didn't know", use_container_width=True):
                         if idx < len(questions) - 1:
                             st.session_state["quiz_current_index"] += 1
                             st.session_state["flashcard_revealed"] = False
@@ -1318,7 +1329,6 @@ with quiz_tab:
                             st.session_state["quiz_finished_final"] = True
                             st.rerun()
 
-            # Przycisk Exit dostępny zawsze na dole
             st.divider()
             if st.button("Exit Quiz", type="secondary", use_container_width=True):
                 st.session_state["quiz_active"] = False
@@ -1330,7 +1340,6 @@ with quiz_tab:
                 st.caption(f"Translate to: {current['direction'].split(' -> ')[1]}")
                 st.subheader(f"'{current['question']}'")
 
-                # Audio Pytania (u góry)
                 st.audio(text_to_speech(current["question"]), format="audio/mpeg")
 
                 if mode == "Written Answer":
@@ -1353,10 +1362,8 @@ with quiz_tab:
                         st.rerun()
                 else:
                     is_correct = False
-                    # Sprawdzanie dokładne
                     if user_ans.strip().lower() == current["answer"].strip().lower():
                         is_correct = True
-                    # Sprawdzanie synonimów (tylko w written)
                     elif mode == "Written Answer":
                         with st.spinner("Checking synonyms..."):
                             synonyms = get_semantic_alternatives(
@@ -1389,7 +1396,6 @@ with quiz_tab:
                                     f"💡 Valid alternatives found in DB: {', '.join(alts)}"
                                 )
 
-                    # Audio Odpowiedzi
                     st.audio(text_to_speech(current["answer"]), format="audio/mpeg")
 
                     if idx + 1 < len(questions):
@@ -1491,7 +1497,6 @@ with search_tr:
         st.header("Saved Translations")
         for idx, row in enumerate(st.session_state["cached_tr_results"]):
             with st.container(border=True):
-                # Badge z wynikiem
                 badge = (
                     f"<span class='similarity-badge'>Score: {row.get('Score')}</span>"
                     if "Score" in row
@@ -1563,7 +1568,10 @@ with search_aud:
                     if "Score" in row
                     else ""
                 )
-                st.markdown(f"**Transcription** {badge}", unsafe_allow_html=True)
+                st.markdown(
+                    f"**{row['Input_Language']} (Audio)** {badge}",
+                    unsafe_allow_html=True,
+                )
                 c1, c2 = st.columns(2)
                 with c1:
                     st.markdown("**Transcription:**")
