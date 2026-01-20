@@ -16,7 +16,7 @@ st.markdown(
     """
     <style>
         .block-container {
-            max-width: 60%;
+            max-width: 95%;
             padding-top: 1rem;
             padding-right: 1rem;
             padding-left: 1rem;
@@ -75,8 +75,8 @@ class CheckGrammar(BaseModel):
 
 class Words(BaseModel):
     word: str
-    translation: str
-    definition: str
+    translation: str  # Krótkie tłumaczenie (do Quizu)
+    definition: str  # Wyjaśnienie/Definicja (do kontekstu)
 
 
 class Grammar(BaseModel):
@@ -149,7 +149,7 @@ def check_language(to_check):
         messages=[
             {
                 "role": "system",
-                "content": f"""You are a language detector. Detect the language of the "{to_check}". Return detected language, e.g. "Polish". Do not return dialects, variations, or pidgin forms.
+                "content": f"""You are a language detector. Detect the language of the "{to_check}". Return detected language in English, e.g. "Polish". Do not return dialects, variations, or pidgin forms.
                 Do not guess meanings of words in other languages.""",
             },
             {"role": "user", "content": to_check},
@@ -236,7 +236,7 @@ def translate_transcription(transcription, output_language):
                 "role": "system",
                 "content": f"""You are a professional personal {output_language} translator. Do three things:
                 1. Detect the language from "{transcription}" and translate to {output_language}. Preserve formatting.
-                2. Return full detected language name (e.g. Polish, German).
+                2. Return full detected language name in English (e.g. Polish, German).
                 3. Extract difficult vocabulary, phrasal verbs, or idioms from the SOURCE text.
                    - For 'word': provide the specific source phrase.
                    - For 'translation': provide ONLY the direct translation in {output_language}.
@@ -570,6 +570,7 @@ def get_quiz_data(input_lang, output_lang):
     for p in points:
         payload = p.payload
         text = payload.get("Input_Text", "")
+        # Limit do 4 słów (łapie phrasal verbs, ale odrzuca zdania)
         if len(text.split()) <= 4:
             if (
                 payload.get("Input_Text_Language") == input_lang
@@ -687,8 +688,8 @@ assure_qdrant_collections_exist()
     speech_cor,
     quiz_tab,
     search_translation,
-    search_audio,
     search_correction,
+    search_audio,
 ) = st.tabs(
     [
         "Translate Text",
@@ -697,8 +698,8 @@ assure_qdrant_collections_exist()
         "Record and Correct Speech",
         "Vocabulary Quiz",
         "Search Translation",
-        "Search Audio Translations",
         "Search Correction",
+        "Search Audio Translations",
     ]
 )
 
@@ -1219,7 +1220,7 @@ with quiz_tab:
             st.rerun()
 
 
-# 6. Search Translation (Tekstowe - bez audio)
+# 6. Search Translation
 with search_translation:
     query_tr = st.text_input("Enter Translation Query", key="search_tr_in")
     search_triggered = st.button(
@@ -1252,7 +1253,45 @@ with search_translation:
                     st.markdown("**Translation:**")
                     st.success(row.get("Translation"))
 
-# 7. Search Audio Translations (Tekstowe - bez audio)
+
+# 7. Search Correction (Tekstowe - bez audio)
+with search_correction:
+    query_cor = st.text_input("Enter Correction Query", key="search_cor_in")
+    search_triggered_cor = st.button(
+        "Search", use_container_width=True, key="search_cor_btn"
+    )
+
+    if search_triggered_cor:
+        df_cor = list_corrections(query_cor)
+        if not df_cor.empty:
+            st.session_state["cached_cor_results"] = df_cor.to_dict("records")
+        else:
+            st.session_state["cached_cor_results"] = []
+            st.info("No corrections found.")
+
+    if (
+        "cached_cor_results" in st.session_state
+        and st.session_state["cached_cor_results"]
+    ):
+        st.header("Saved Corrections")
+        for idx, row in enumerate(st.session_state["cached_cor_results"]):
+            with st.container(border=True):
+                st.subheader(row.get("Input_Language"))
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.markdown("**Original:**")
+                    st.error(row.get("Input_Text"))
+                with c2:
+                    st.markdown("**Corrected:**")
+                    st.success(row.get("Correction"))
+
+                with st.expander("Explanations"):
+                    st.write(row.get("Difficult_Words"))
+                    st.divider()
+                    st.write(row.get("Grammar_Rules"))
+
+
+# 8. Search Audio Translations (Tekstowe - bez audio)
 with search_audio:
     query_audio = st.text_input(
         "Enter Audio Transcription Query", key="search_audio_in"
@@ -1287,39 +1326,3 @@ with search_audio:
                 with c2:
                     st.markdown("**Translation:**")
                     st.success(row.get("Translation"))
-
-# 8. Search Correction (Tekstowe - bez audio)
-with search_correction:
-    query_cor = st.text_input("Enter Correction Query", key="search_cor_in")
-    search_triggered_cor = st.button(
-        "Search", use_container_width=True, key="search_cor_btn"
-    )
-
-    if search_triggered_cor:
-        df_cor = list_corrections(query_cor)
-        if not df_cor.empty:
-            st.session_state["cached_cor_results"] = df.to_dict("records")
-        else:
-            st.session_state["cached_cor_results"] = []
-            st.info("No corrections found.")
-
-    if (
-        "cached_cor_results" in st.session_state
-        and st.session_state["cached_cor_results"]
-    ):
-        st.header("Saved Corrections")
-        for idx, row in enumerate(st.session_state["cached_cor_results"]):
-            with st.container(border=True):
-                st.subheader(row.get("Input_Language"))
-                c1, c2 = st.columns(2)
-                with c1:
-                    st.markdown("**Original:**")
-                    st.error(row.get("Input_Text"))
-                with c2:
-                    st.markdown("**Corrected:**")
-                    st.success(row.get("Correction"))
-
-                with st.expander("Explanations"):
-                    st.write(row.get("Difficult_Words"))
-                    st.divider()
-                    st.write(row.get("Grammar_Rules"))
