@@ -656,10 +656,25 @@ def list_translations(query=None, language_filter=None, target_language_filter=N
         )
 
 
-def list_corrections(query=None):
+def list_corrections(query=None, language_filter=None):
     client = get_qdrant_client()
+
+    # Przygotowanie filtra językowego
+    search_filter = None
+    if language_filter and language_filter != "All":
+        search_filter = models.Filter(
+            must=[
+                models.FieldCondition(
+                    key="Input_Language", match=models.MatchValue(value=language_filter)
+                )
+            ]
+        )
+
     if not query:
-        results, _ = client.scroll(collection_name="corrections_v2", limit=10)
+        # Przewijanie bazy z uwzględnieniem filtra
+        results, _ = client.scroll(
+            collection_name="corrections_v2", scroll_filter=search_filter, limit=10
+        )
         return pd.DataFrame(
             [
                 {
@@ -674,9 +689,11 @@ def list_corrections(query=None):
             ]
         )
     else:
+        # Wyszukiwanie semantyczne z uwzględnieniem filtra
         search_result = client.search(
             collection_name="corrections_v2",
             query_vector=("Input_Text_Vector", get_embedding(query)),
+            query_filter=search_filter,
             limit=10,
         )
         return pd.DataFrame(
@@ -695,15 +712,40 @@ def list_corrections(query=None):
         )
 
 
-def list_audio_translations(query=None):
+def list_audio_translations(
+    query=None, language_filter=None, target_language_filter=None
+):
     client = get_qdrant_client()
+    conditions = []
+
+    if language_filter and language_filter != "All":
+        conditions.append(
+            models.FieldCondition(
+                key="Input_Language", match=models.MatchValue(value=language_filter)
+            )
+        )
+    if target_language_filter and target_language_filter != "All":
+        conditions.append(
+            models.FieldCondition(
+                key="Translation_Language",
+                match=models.MatchValue(value=target_language_filter),
+            )
+        )
+
+    search_filter = models.Filter(must=conditions) if conditions else None
+
     if not query:
-        results, _ = client.scroll(collection_name="audio_translations_v2", limit=10)
+        results, _ = client.scroll(
+            collection_name="audio_translations_v2",
+            scroll_filter=search_filter,
+            limit=10,
+        )
         return pd.DataFrame(
             [
                 {
                     "id": r.id,
                     "Input_Language": r.payload["Input_Language"],
+                    "Target_Language": r.payload.get("Translation_Language", "N/A"),
                     "Transcription": r.payload["Transcription"],
                     "Translation": r.payload["Translation"],
                 }
@@ -714,6 +756,7 @@ def list_audio_translations(query=None):
         search_result = client.search(
             collection_name="audio_translations_v2",
             query_vector=("Transcription_Vector", get_embedding(query)),
+            query_filter=search_filter,
             limit=10,
         )
         return pd.DataFrame(
@@ -722,6 +765,7 @@ def list_audio_translations(query=None):
                     "id": r.id,
                     "Score": round(r.score, 2),
                     "Input_Language": r.payload["Input_Language"],
+                    "Target_Language": r.payload.get("Translation_Language", "N/A"),
                     "Transcription": r.payload["Transcription"],
                     "Translation": r.payload["Translation"],
                 }
@@ -2240,14 +2284,47 @@ with database_tab:
 
     # 8. Search Corrections (Inside Nested Tab)
     with tab_cor:
-        query_cor = st.text_input("Enter Correction Query", key="search_cor_in")
+        cur_mode_cor = st.session_state.get("search_cor_mode", "None")
+
+        # Dynamiczny układ kolumn
+        if cur_mode_cor == "None":
+            cols_cor = st.columns([0.7, 0.3])
+        else:
+            cols_cor = st.columns([0.5, 0.25, 0.25])
+
+        with cols_cor[0]:
+            query_cor = st.text_input(
+                "Correction Query",
+                key="search_cor_in",
+                label_visibility="collapsed",
+                placeholder="Enter text to search corrections...",
+            )
+
+        with cols_cor[1]:
+            st.selectbox(
+                "Filter By",
+                ["None", "Input Language"],
+                key="search_cor_mode",
+                label_visibility="collapsed",
+            )
+
+        f_in_cor = None
+        if cur_mode_cor == "Input Language":
+            with cols_cor[2]:
+                f_in_cor = st.selectbox(
+                    "Select Language",
+                    LANGUAGES_INPUT,
+                    key="dyn_in_cor",
+                    label_visibility="collapsed",
+                )
+
         if st.button(
             "Search Corrections", use_container_width=True, key="search_cor_btn"
         ):
-            df = list_corrections(query_cor)
+            df = list_corrections(query_cor, f_in_cor)
             st.session_state["cached_cor_results"] = df.to_dict("records")
             if df.empty:
-                st.warning("No results found.")
+                st.warning("No results found in corrections.")
 
         if st.session_state.get("cached_cor_results"):
             for idx, row in enumerate(st.session_state["cached_cor_results"]):
@@ -2264,15 +2341,14 @@ with database_tab:
                             unsafe_allow_html=True,
                         )
                     with c1:
-                        st.markdown("**Original:**")
+                        st.caption("Original")
                         st.error(row.get("Input_Text"))
                     with c2:
-                        st.markdown("**Corrected:**")
+                        st.caption("Corrected")
                         st.success(row.get("Correction"))
                     with c3:
                         if st.button("🗑️", key=f"del_cor_{row['id']}"):
                             delete_from_db("corrections_v2", row["id"])
-                            # Remove from local state
                             st.session_state["cached_cor_results"] = [
                                 r
                                 for r in st.session_state["cached_cor_results"]
@@ -2281,17 +2357,76 @@ with database_tab:
                             st.rerun()
 
                     with st.expander("Explanations"):
+                        st.markdown("**Tricky Words:**")
                         st.write(row.get("Difficult_Words"))
                         st.divider()
+                        st.markdown("**Grammar Rules:**")
                         st.write(row.get("Grammar_Rules"))
-
     # 9. Search Audio (Inside Nested Tab)
     with tab_aud:
-        query_audio = st.text_input(
-            "Enter Audio Transcription Query", key="search_audio_in"
-        )
+        cur_mode_aud = st.session_state.get("search_aud_mode", "None")
+
+        # Dynamiczny układ kolumn w zależności od trybu filtra
+        if cur_mode_aud == "None":
+            cols_aud = st.columns([0.7, 0.3])
+        elif cur_mode_aud == "Both":
+            cols_aud = st.columns([0.4, 0.2, 0.2, 0.2])
+        else:
+            cols_aud = st.columns([0.5, 0.25, 0.25])
+
+        with cols_aud[0]:
+            query_audio = st.text_input(
+                "Audio Query",
+                key="search_audio_in",
+                label_visibility="collapsed",
+                placeholder="Search transcriptions...",
+            )
+
+        with cols_aud[1]:
+            st.selectbox(
+                "Filter By",
+                ["None", "Input Language", "Target Language", "Both"],
+                key="search_aud_mode",
+                label_visibility="collapsed",
+            )
+
+        f_in_aud = f_out_aud = None
+
+        # Logika wyświetlania dodatkowych selectboxów
+        if cur_mode_aud == "Input Language":
+            with cols_aud[2]:
+                f_in_aud = st.selectbox(
+                    "In Lang",
+                    LANGUAGES_INPUT,
+                    key="dyn_in_aud",
+                    label_visibility="collapsed",
+                )
+        elif cur_mode_aud == "Target Language":
+            with cols_aud[2]:
+                f_out_aud = st.selectbox(
+                    "Out Lang",
+                    LANGUAGES_OUTPUT,
+                    key="dyn_out_aud",
+                    label_visibility="collapsed",
+                )
+        elif cur_mode_aud == "Both":
+            with cols_aud[2]:
+                f_in_aud = st.selectbox(
+                    "In Lang",
+                    LANGUAGES_INPUT,
+                    key="dyn_in_aud_b",
+                    label_visibility="collapsed",
+                )
+            with cols_aud[3]:
+                f_out_aud = st.selectbox(
+                    "Out Lang",
+                    LANGUAGES_OUTPUT,
+                    key="dyn_out_aud_b",
+                    label_visibility="collapsed",
+                )
+
         if st.button("Search Audio", use_container_width=True, key="search_audio_btn"):
-            df = list_audio_translations(query_audio)
+            df = list_audio_translations(query_audio, f_in_aud, f_out_aud)
             st.session_state["cached_audio_results"] = df.to_dict("records")
             if df.empty:
                 st.warning("No results found.")
@@ -2305,21 +2440,23 @@ with database_tab:
                         if "Score" in row
                         else ""
                     )
+
+                    # Wyświetlanie kierunku tłumaczenia w nagłówku
                     with c0:
                         st.markdown(
-                            f"**{row['Input_Language']} (Audio)** {badge}",
+                            f"**{row['Input_Language']} &rarr; {row.get('Target_Language', '?')}** {badge}",
                             unsafe_allow_html=True,
                         )
+
                     with c1:
-                        st.markdown("**Transcription:**")
+                        st.caption("Transcription")
                         st.info(row.get("Transcription"))
                     with c2:
-                        st.markdown("**Translation:**")
+                        st.caption("Translation")
                         st.success(row.get("Translation"))
                     with c3:
                         if st.button("🗑️", key=f"del_aud_{row['id']}"):
                             delete_from_db("audio_translations_v2", row["id"])
-                            # Remove from local state
                             st.session_state["cached_audio_results"] = [
                                 r
                                 for r in st.session_state["cached_audio_results"]
