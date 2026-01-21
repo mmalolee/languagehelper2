@@ -43,17 +43,7 @@ st.markdown(
             border: 1px solid #d6d6d6;
         }
         
-        .alternatives-box {
-            margin-top: 10px;
-            padding: 10px;
-            background-color: #f8f9fa; /* Jasne tło dla kontrastu w light mode, w dark mode będzie ok */
-            border-left: 3px solid #4CAF50;
-            font-size: 0.9em;
-            color: #333; /* Ciemny tekst */
-            border-radius: 4px;
-        }
-        
-        /* Centrowanie tekstu w fiszkach */
+        /* Centrowanie nagłówków w fiszkach */
         .stMarkdown h1, .stMarkdown h2, .stMarkdown h3 {
             text-align: center !important;
         }
@@ -134,6 +124,22 @@ class VerifiedSynonyms(BaseModel):
     synonyms: list[str] = Field(
         ...,
         description="List of words from the candidates that are actual synonyms or close alternatives.",
+    )
+
+
+class ClozeQuestion(BaseModel):
+    sentence_with_blank: str = Field(
+        ...,
+        description="The sentence with one key grammatical word replaced by '______'.",
+    )
+    missing_word: str = Field(..., description="The correct word that was removed.")
+    options: list[str] = Field(
+        ...,
+        description="3 incorrect options (distractors) that are grammatically plausible but wrong.",
+    )
+    context_clue: str = Field(
+        ...,
+        description="Grammatical clues resolving ambiguity WITHOUT translating the whole sentence (e.g. 'Subject: We (plural) | Tense: Past').",
     )
 
 
@@ -221,8 +227,8 @@ def get_corr_words_and_grammar(to_correct, input_language):
                 "content": f"""You are a professional grammar specialist in {input_language}. Do 4 things:
                     1. Correct the grammar of the input text.
                     2. Extract difficult vocabulary, phrasal verbs, or idioms from the input text.
-                       - 'word': The specific phrase or collocation in {input_language} (e.g., 'look at', 'take off').
-                       - 'translation': The direct, short translation in English (e.g. 'patrzeć na', 'startować'). This is for flashcards.
+                       - 'word': Provide the **base dictionary form (lemma)** of the word in {input_language}.
+                       - 'translation': The direct, short translation in English.
                        - 'definition': A short explanation or definition in English to provide context.
                     3. Explain any difficult or tricky grammatical constructions found in the original text.
                     4. All explanations must be given in English.
@@ -273,7 +279,7 @@ def translate_transcription(transcription, output_language):
                 1. Detect the language from "{transcription}" and translate to {output_language}. Preserve formatting.
                 2. Return full detected language name in English (e.g. Polish, German).
                 3. Extract difficult vocabulary, phrasal verbs, or idioms from the SOURCE text.
-                   - For 'word': provide the specific source phrase.
+                   - For 'word': provide the base dictionary form (lemma).
                    - For 'translation': provide ONLY the direct translation in {output_language}.
                    - For 'definition': provide a short definition/context in {output_language}.""",
             },
@@ -547,16 +553,14 @@ def list_corrections(query=None):
     client = get_qdrant_client()
     if not query:
         results, _ = client.scroll(collection_name="corrections", limit=10)
-        # NAPRAWIONY KLUCZ PONIŻEJ: r.payload["Diff_Words"] zamiast "Difficult_Words"
+        # --- POPRAWIONY BŁĄD KEYERROR (Diff_Words) ---
         return pd.DataFrame(
             [
                 {
                     "Input_Language": r.payload["Input_Language"],
                     "Input_Text": r.payload["Input_Text"],
                     "Correction": r.payload["Correction"],
-                    "Difficult_Words": r.payload.get(
-                        "Diff_Words", "N/A"
-                    ),  # Używamy .get dla bezpieczeństwa
+                    "Difficult_Words": r.payload.get("Diff_Words", "N/A"),
                     "Grammar_Rules": r.payload["Grammar_Rules"],
                 }
                 for r in results
@@ -568,7 +572,7 @@ def list_corrections(query=None):
             query_vector=("Input_Text_Vector", get_embedding(query)),
             limit=10,
         )
-        # NAPRAWIONY KLUCZ PONIŻEJ RÓWNIEŻ
+        # --- POPRAWIONY BŁĄD KEYERROR (Diff_Words) ---
         return pd.DataFrame(
             [
                 {
@@ -653,11 +657,78 @@ def get_quiz_data(lang1, lang2):
     return candidates
 
 
+# --- FUNKCJA GENERUJĄCA PYTANIA DO QUIZU GRAMATYCZNEGO (CLOZE) ---
+def generate_grammar_quiz_questions(language, count=5):
+    client = get_qdrant_client()
+    points, _ = client.scroll(
+        collection_name="corrections",
+        scroll_filter=models.Filter(
+            must=[
+                models.FieldCondition(
+                    key="Input_Language", match=models.MatchValue(value=language)
+                )
+            ]
+        ),
+        limit=50,
+    )
+
+    if len(points) < 3:
+        return []
+
+    selected_points = random.sample(points, min(len(points), count))
+    quiz_questions = []
+
+    instructor_client = get_instructor_openai_client()
+
+    for p in selected_points:
+        correct_sentence = p.payload["Correction"]
+
+        try:
+            cloze = instructor_client.chat.completions.create(
+                model=MODEL,
+                temperature=0.7,
+                response_model=ClozeQuestion,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": f"""You are a strict language teacher creating a grammar quiz for {language}. 
+                        Task:
+                        1. Take the provided sentence.
+                        2. Replace ONE key grammatical word with '______'.
+                        3. CRITICAL: Analyze the sentence structure. Identify the Subject, Tense, Gender, or Number required to fill the gap correctly.
+                        4. Provide these details as 'context_clue' (e.g. 'Subject: We (plural) | Tense: Past'). DO NOT TRANSLATE the whole sentence.
+                        5. Generate 3 distractors that are plausible but wrong for THIS specific grammatical context.""",
+                    },
+                    {"role": "user", "content": f"Sentence: {correct_sentence}"},
+                ],
+            )
+
+            options = cloze.options + [cloze.missing_word]
+            random.shuffle(options)
+
+            quiz_questions.append(
+                {
+                    "question": cloze.sentence_with_blank,
+                    "answer": cloze.missing_word,
+                    "options": options,
+                    "context_clue": cloze.context_clue,
+                    "explanation": p.payload.get(
+                        "Grammar_Rules", "No explanation available."
+                    ),
+                    "original_wrong": p.payload.get("Input_Text", ""),
+                }
+            )
+        except Exception as e:
+            print(f"Error generating cloze: {e}")
+            continue
+
+    return quiz_questions
+
+
 # --- FUNKCJA WERYFIKACJI ALTERNATYW ---
 def get_semantic_alternatives(target_text, target_lang):
     client = get_qdrant_client()
 
-    # Pobieramy wektory bliskie target_text
     search_result = client.search(
         collection_name="translations",
         query_vector=("Input_Vector", get_embedding(target_text)),
@@ -668,12 +739,10 @@ def get_semantic_alternatives(target_text, target_lang):
     raw_candidates = set()
     for r in search_result:
         payload = r.payload
-        # Sprawdzamy czy Input_Text pasuje językowo
         if payload.get("Input_Text_Language") == target_lang:
             word = payload.get("Input_Text", "").strip()
             if word.lower() != target_text.lower().strip():
                 raw_candidates.add(word)
-        # Sprawdzamy czy Translation pasuje językowo
         if payload.get("Translation_Language") == target_lang:
             word = payload.get("Translation", "").strip()
             if word.lower() != target_text.lower().strip():
@@ -743,6 +812,12 @@ keys = [
     "quiz_submitted",
     "quiz_finished_final",
     "quiz_mode",
+    "grammar_quiz_active",
+    "grammar_quiz_questions",
+    "grammar_quiz_index",
+    "grammar_quiz_score",
+    "grammar_quiz_submitted",
+    "grammar_quiz_finished",
     "cached_tr_results",
     "cached_cor_results",
     "cached_audio_results",
@@ -801,9 +876,10 @@ assure_qdrant_collections_exist()
     text_cor,
     speech_cor,
     quiz_tab,
+    grammar_quiz_tab,
     search_tr,
-    search_aud,
     search_cor,
+    search_aud,
 ) = st.tabs(
     [
         "Translate Text",
@@ -811,12 +887,14 @@ assure_qdrant_collections_exist()
         "Correct Text",
         "Record & Correct",
         "Vocabulary Quiz",
+        "Grammar Quiz",
         "Search Translations",
-        "Search Audio Translation",
         "Search Corrections",
+        "Staudio",
     ]
 )
 
+# ... (TABS 1-4 SAME AS BEFORE) ...
 # 1. Text Translation
 with text_tr:
     c0, c1 = st.columns(2)
@@ -1170,7 +1248,7 @@ with speech_cor:
         else:
             st.warning("No Correction to Save")
 
-# 5. Quiz Tab (MERGED FLASHCARDS + QUIZ + SEMANTIC ALTS)
+# 5. Vocabulary Quiz
 with quiz_tab:
     st.header("Vocabulary & Flashcards")
 
@@ -1187,7 +1265,6 @@ with quiz_tab:
         candidates = get_quiz_data(q_lang1, q_lang2)
         count = len(candidates)
 
-        # Pasek z trybem i ewentualnym sukcesem (zielony pasek)
         c_mode, c_stat = st.columns([0.6, 0.4])
         with c_mode:
             quiz_mode = st.radio(
@@ -1197,7 +1274,6 @@ with quiz_tab:
             )
         with c_stat:
             st.write("")
-            # Custom CSS dla paska, wyrównany do radio buttons
             color = "#4CAF50" if count >= 3 else "#FFC107"
             bg = "rgba(76, 175, 80, 0.1)" if count >= 3 else "rgba(255, 193, 7, 0.1)"
             text = (
@@ -1430,6 +1506,166 @@ with quiz_tab:
                     del st.session_state[key]
             st.rerun()
 
+# 6. Grammar Quiz (NEW TAB)
+with grammar_quiz_tab:
+    st.header("Grammar Correction Quiz (Fill in the blank)")
+
+    if not st.session_state.get(
+        "grammar_quiz_active", False
+    ) and not st.session_state.get("grammar_quiz_finished", False):
+        st.subheader("Settings")
+        g_lang = st.selectbox("Select Language for Correction Quiz", LANGUAGES_INPUT)
+
+        # Sprawdź dostępność pytań
+        client = get_qdrant_client()
+        points_count = client.count(
+            collection_name="corrections",
+            count_filter=models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key="Input_Language", match=models.MatchValue(value=g_lang)
+                    )
+                ]
+            ),
+            exact=True,
+        ).count
+
+        c_info, c_btn = st.columns([0.6, 0.4])
+        with c_btn:
+            st.write("")
+            color = "#4CAF50" if points_count >= 3 else "#FFC107"
+            bg = (
+                "rgba(76, 175, 80, 0.1)"
+                if points_count >= 3
+                else "rgba(255, 193, 7, 0.1)"
+            )
+            text = (
+                f"Found {points_count} items."
+                if points_count >= 3
+                else f"Not enough ({points_count}). Need 3+."
+            )
+
+            st.markdown(
+                f"""
+                <div style="
+                    background-color: {bg}; 
+                    color: {color}; 
+                    padding: 8px 15px; 
+                    border-radius: 5px; 
+                    border: 1px solid {color}; 
+                    text-align: center; 
+                    margin-top: 27px;
+                    font-weight: bold;
+                ">
+                    {text}
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        if points_count >= 3:
+            num_q = st.slider(
+                "Select number of questions",
+                1,
+                min(points_count, 10),
+                min(points_count, 5),
+            )
+            if st.button("Start Grammar Quiz", use_container_width=True):
+                # --- KLUCZOWA POPRAWKA: RESETOWANIE STANU ---
+                st.session_state["grammar_quiz_questions"] = []
+
+                with st.spinner("Generating grammar questions using AI..."):
+                    questions = generate_grammar_quiz_questions(g_lang, num_q)
+                    if questions:
+                        st.session_state["grammar_quiz_questions"] = questions
+                        st.session_state["grammar_quiz_index"] = 0
+                        st.session_state["grammar_quiz_score"] = 0
+                        st.session_state["grammar_quiz_active"] = True
+                        st.session_state["grammar_quiz_submitted"] = False
+                        st.rerun()
+                    else:
+                        st.error("Failed to generate questions. Try again.")
+
+    # --- ACTIVE GRAMMAR QUIZ ---
+    elif st.session_state.get("grammar_quiz_active", False):
+        idx = st.session_state["grammar_quiz_index"]
+        questions = st.session_state["grammar_quiz_questions"]
+        current = questions[idx]
+
+        st.write(f"Question {idx + 1} of {len(questions)}")
+        st.progress((idx) / len(questions))
+
+        with st.container(border=True):
+            # Wyświetlamy kontekst z zabezpieczeniem .get()
+            context_clue = current.get("context_clue", "No clue available")
+            st.info(f"ℹ️ **Grammatical Clue:** {context_clue}")
+
+            st.markdown(f"### {current['question']}")
+
+            user_ans = st.radio(
+                "Choose the missing word:",
+                current["options"],
+                key=f"g_radio_{idx}",
+                disabled=st.session_state["grammar_quiz_submitted"],
+            )
+
+            if not st.session_state["grammar_quiz_submitted"]:
+                if st.button("Check", use_container_width=True):
+                    st.session_state["grammar_quiz_submitted"] = True
+                    st.rerun()
+            else:
+                if user_ans == current["answer"]:
+                    st.success(f"Correct! The word was **{current['answer']}**.")
+                    if f"g_scored_{idx}" not in st.session_state:
+                        st.session_state["grammar_quiz_score"] += 1
+                        st.session_state[f"g_scored_{idx}"] = True
+                else:
+                    st.error(
+                        f"Incorrect. The correct word was **{current['answer']}**."
+                    )
+
+                with st.expander("Why? (Context & Explanation)"):
+                    st.write(f"**Original Mistake:** {current['original_wrong']}")
+                    st.info(current["explanation"])
+
+                st.audio(
+                    text_to_speech(
+                        current["question"].replace("______", current["answer"])
+                    ),
+                    format="audio/mpeg",
+                )
+
+                if idx + 1 < len(questions):
+                    if st.button("Next Question", use_container_width=True):
+                        st.session_state["grammar_quiz_index"] += 1
+                        st.session_state["grammar_quiz_submitted"] = False
+                        st.rerun()
+                else:
+                    if st.button("Finish Quiz", use_container_width=True):
+                        st.session_state["grammar_quiz_active"] = False
+                        st.session_state["grammar_quiz_finished"] = True
+                        st.rerun()
+
+        st.divider()
+        if st.button("Exit Grammar Quiz", type="secondary", use_container_width=True):
+            st.session_state["grammar_quiz_active"] = False
+            st.rerun()
+
+    # --- GRAMMAR RESULT ---
+    elif st.session_state.get("grammar_quiz_finished", False):
+        st.header("Grammar Quiz Results")
+        st.balloons()
+        st.metric(
+            "Final Score",
+            f"{st.session_state['grammar_quiz_score']} / {len(st.session_state['grammar_quiz_questions'])}",
+        )
+        if st.button("Return to Menu", use_container_width=True):
+            st.session_state["grammar_quiz_finished"] = False
+            st.session_state["grammar_quiz_active"] = False
+            for key in list(st.session_state.keys()):
+                if key.startswith("g_scored_"):
+                    del st.session_state[key]
+            st.rerun()
 
 # 7. Search Translation (Dynamic Layout + Score)
 with search_tr:
@@ -1497,6 +1733,7 @@ with search_tr:
         st.header("Saved Translations")
         for idx, row in enumerate(st.session_state["cached_tr_results"]):
             with st.container(border=True):
+                # Badge z wynikiem
                 badge = (
                     f"<span class='similarity-badge'>Score: {row.get('Score')}</span>"
                     if "Score" in row
