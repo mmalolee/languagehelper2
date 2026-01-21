@@ -143,6 +143,21 @@ class ClozeQuestion(BaseModel):
     )
 
 
+class OrthographyQuestion(BaseModel):
+    sentence_with_blank: str = Field(
+        ...,
+        description="In 'Sentence' mode: the full sentence with a blank. In 'Word' mode: The English translation/definition of the word.",
+    )
+    correct_word: str = Field(..., description="The correct spelling of the word.")
+    distractors: list[str] = Field(
+        ...,
+        description="3 incorrect versions of the word that sound similar but are spelled wrong (e.g. 'morze' vs 'może', 'buhl' vs 'ból').",
+    )
+    rule_explanation: str = Field(
+        ..., description="Short explanation of the spelling rule."
+    )
+
+
 #################################
 # AUDIO PROCESSING FUNCTIONS    #
 #################################
@@ -553,7 +568,6 @@ def list_corrections(query=None):
     client = get_qdrant_client()
     if not query:
         results, _ = client.scroll(collection_name="corrections", limit=10)
-        # --- POPRAWIONY BŁĄD KEYERROR (Diff_Words) ---
         return pd.DataFrame(
             [
                 {
@@ -572,7 +586,6 @@ def list_corrections(query=None):
             query_vector=("Input_Text_Vector", get_embedding(query)),
             limit=10,
         )
-        # --- POPRAWIONY BŁĄD KEYERROR (Diff_Words) ---
         return pd.DataFrame(
             [
                 {
@@ -657,7 +670,7 @@ def get_quiz_data(lang1, lang2):
     return candidates
 
 
-# --- FUNKCJA GENERUJĄCA PYTANIA DO QUIZU GRAMATYCZNEGO (CLOZE) ---
+# --- GENEROWANIE GRAMMAR QUIZ ---
 def generate_grammar_quiz_questions(language, count=5):
     client = get_qdrant_client()
     points, _ = client.scroll(
@@ -677,12 +690,10 @@ def generate_grammar_quiz_questions(language, count=5):
 
     selected_points = random.sample(points, min(len(points), count))
     quiz_questions = []
-
     instructor_client = get_instructor_openai_client()
 
     for p in selected_points:
         correct_sentence = p.payload["Correction"]
-
         try:
             cloze = instructor_client.chat.completions.create(
                 model=MODEL,
@@ -691,21 +702,13 @@ def generate_grammar_quiz_questions(language, count=5):
                 messages=[
                     {
                         "role": "system",
-                        "content": f"""You are a strict language teacher creating a grammar quiz for {language}. 
-                        Task:
-                        1. Take the provided sentence.
-                        2. Replace ONE key grammatical word with '______'.
-                        3. CRITICAL: Analyze the sentence structure. Identify the Subject, Tense, Gender, or Number required to fill the gap correctly.
-                        4. Provide these details as 'context_clue' (e.g. 'Subject: We (plural) | Tense: Past'). DO NOT TRANSLATE the whole sentence.
-                        5. Generate 3 distractors that are plausible but wrong for THIS specific grammatical context.""",
+                        "content": f"Create a grammar quiz for {language}. Replace ONE key word with '______'. Provide grammatical context clues without full translation. Generate 3 wrong distractors.",
                     },
                     {"role": "user", "content": f"Sentence: {correct_sentence}"},
                 ],
             )
-
             options = cloze.options + [cloze.missing_word]
             random.shuffle(options)
-
             quiz_questions.append(
                 {
                     "question": cloze.sentence_with_blank,
@@ -719,23 +722,92 @@ def generate_grammar_quiz_questions(language, count=5):
                 }
             )
         except Exception as e:
-            print(f"Error generating cloze: {e}")
             continue
 
     return quiz_questions
 
 
+# --- GENEROWANIE ORTOGRAFII (Z BAZY) ---
+def generate_orthography_questions(language, count=5, mode="Sentences"):
+    client = get_qdrant_client()
+    source_texts = []
+
+    if mode == "Sentences":
+        points, _ = client.scroll(
+            collection_name="corrections",
+            scroll_filter=models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key="Input_Language", match=models.MatchValue(value=language)
+                    )
+                ]
+            ),
+            limit=100,
+        )
+        source_texts = [p.payload["Correction"] for p in points]
+    else:
+        points, _ = client.scroll(
+            collection_name="translations",
+            scroll_filter=models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key="Input_Text_Language",
+                        match=models.MatchValue(value=language),
+                    )
+                ]
+            ),
+            limit=100,
+        )
+        source_texts = [p.payload["Input_Text"] for p in points]
+
+    if len(source_texts) < 3:
+        return []
+
+    selected_texts = random.sample(source_texts, min(len(source_texts), count))
+    instructor_client = get_instructor_openai_client()
+    questions = []
+
+    for text in selected_texts:
+        try:
+            system_prompt = ""
+            if mode == "Sentences":
+                system_prompt = f"You are an orthography teacher for {language}. Analysis the sentence: '{text}'. Select ONE word that is phonetically difficult or prone to spelling errors (e.g. ó/u, rz/ż, ch/h). Replace it with '______'. Provide the correct word and 3 phonetic distractors."
+            else:
+                system_prompt = f"You are an orthography teacher for {language}. The target word is: '{text}'. Create a definition/translation (in English) as the context/question. The target word is the answer. Generate 3 phonetic distractors for '{text}'."
+
+            ortho = instructor_client.chat.completions.create(
+                model=MODEL,
+                temperature=0.8,
+                response_model=OrthographyQuestion,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": f"Source: {text}"},
+                ],
+            )
+            options = ortho.distractors + [ortho.correct_word]
+            random.shuffle(options)
+            questions.append(
+                {
+                    "question": ortho.sentence_with_blank,
+                    "answer": ortho.correct_word,
+                    "options": options,
+                    "explanation": ortho.rule_explanation,
+                }
+            )
+        except Exception:
+            continue
+    return questions
+
+
 # --- FUNKCJA WERYFIKACJI ALTERNATYW ---
 def get_semantic_alternatives(target_text, target_lang):
     client = get_qdrant_client()
-
     search_result = client.search(
         collection_name="translations",
         query_vector=("Input_Vector", get_embedding(target_text)),
         score_threshold=0.70,
         limit=15,
     )
-
     raw_candidates = set()
     for r in search_result:
         payload = r.payload
@@ -761,12 +833,9 @@ def get_semantic_alternatives(target_text, target_lang):
             messages=[
                 {
                     "role": "system",
-                    "content": f"You are a lexicographer for {target_lang}. Given a target word and a list of candidates, return ONLY those candidates that are valid synonyms or very close semantic alternatives. Ignore typos or unrelated words. If none match, return an empty list.",
+                    "content": f"Return ONLY synonyms for {target_text} in {target_lang} from list.",
                 },
-                {
-                    "role": "user",
-                    "content": f"Target Word: {target_text}\nLanguage: {target_lang}\nCandidates: {candidates_list}",
-                },
+                {"role": "user", "content": str(candidates_list)},
             ],
         )
         return response.synonyms
@@ -818,6 +887,12 @@ keys = [
     "grammar_quiz_score",
     "grammar_quiz_submitted",
     "grammar_quiz_finished",
+    "ortho_quiz_active",
+    "ortho_quiz_questions",
+    "ortho_quiz_index",
+    "ortho_quiz_score",
+    "ortho_quiz_submitted",
+    "ortho_quiz_finished",
     "cached_tr_results",
     "cached_cor_results",
     "cached_audio_results",
@@ -827,6 +902,11 @@ keys = [
     "flashcard_revealed",
     "flashcard_score",
     "quiz_alternatives",
+    "ortho_mode_saved",
+    "ortho_interaction_saved",
+    "grammar_interaction_saved",
+    "go_flashcard_revealed",
+    "go_flashcard_score",
 ]
 
 for k in keys:
@@ -876,7 +956,7 @@ assure_qdrant_collections_exist()
     text_cor,
     speech_cor,
     quiz_tab,
-    grammar_quiz_tab,
+    grammar_ortho_tab,
     search_tr,
     search_cor,
     search_aud,
@@ -887,14 +967,14 @@ assure_qdrant_collections_exist()
         "Correct Text",
         "Record & Correct",
         "Vocabulary Quiz",
-        "Grammar Quiz",
+        "Grammar & Orthography",
         "Search Translations",
         "Search Corrections",
         "Staudio",
     ]
 )
 
-# ... (TABS 1-4 SAME AS BEFORE) ...
+# ... (Tabs 1-4 Unchanged) ...
 # 1. Text Translation
 with text_tr:
     c0, c1 = st.columns(2)
@@ -1281,22 +1361,8 @@ with quiz_tab:
                 if count >= 3
                 else f"Not enough items ({count}). Need 3+."
             )
-
             st.markdown(
-                f"""
-                <div style="
-                    background-color: {bg}; 
-                    color: {color}; 
-                    padding: 8px 15px; 
-                    border-radius: 5px; 
-                    border: 1px solid {color}; 
-                    text-align: center; 
-                    margin-top: 27px; /* Wyrównanie do kropek radio */
-                    font-weight: bold;
-                ">
-                    {text}
-                </div>
-                """,
+                f"<div style='background-color: {bg}; color: {color}; padding: 8px 15px; border-radius: 5px; border: 1px solid {color}; text-align: center; margin-top: 27px; font-weight: bold;'>{text}</div>",
                 unsafe_allow_html=True,
             )
 
@@ -1309,7 +1375,6 @@ with quiz_tab:
 
             if st.button("Start", use_container_width=True):
                 selected = random.sample(candidates, num_q)
-
                 if quiz_mode == "Select Translation":
                     for item in selected:
                         same_dir_candidates = [
@@ -1332,14 +1397,11 @@ with quiz_tab:
                 st.session_state["quiz_score"] = 0
                 st.session_state["quiz_active"] = True
                 st.session_state["quiz_submitted"] = False
-
                 if quiz_mode == "Flashcards":
                     st.session_state["flashcard_revealed"] = False
                     st.session_state["flashcard_score"] = 0
-
                 st.rerun()
 
-    # --- ACTIVE SESSION ---
     elif st.session_state.get("quiz_active", False):
         idx = st.session_state["quiz_current_index"]
         questions = st.session_state["quiz_questions"]
@@ -1349,21 +1411,20 @@ with quiz_tab:
         st.write(f"Item {idx + 1} of {len(questions)}")
         st.progress((idx) / len(questions))
 
-        # --- LOGIKA FISZEK (FLASHCARDS) ---
         if mode == "Flashcards":
             with st.container(border=True):
                 st.caption(f"Translate to: {current['direction'].split(' -> ')[1]}")
-                st.markdown(f"## {current['question']}")
-
+                st.markdown(
+                    f"<h2 style='text-align: center;'>{current['question']}</h2>",
+                    unsafe_allow_html=True,
+                )
                 if st.session_state["flashcard_revealed"]:
                     st.divider()
                     st.markdown(
-                        f"<h2 style='color: #4CAF50;'>{current['answer']}</h2>",
+                        f"<h2 style='text-align: center; color: #4CAF50;'>{current['answer']}</h2>",
                         unsafe_allow_html=True,
                     )
-
                     st.audio(text_to_speech(current["answer"]), format="audio/mpeg")
-
                     with st.spinner("Checking for synonyms..."):
                         alts = get_semantic_alternatives(
                             current["answer"], current["target_lang"]
@@ -1404,18 +1465,15 @@ with quiz_tab:
                             st.session_state["quiz_active"] = False
                             st.session_state["quiz_finished_final"] = True
                             st.rerun()
-
             st.divider()
             if st.button("Exit Quiz", type="secondary", use_container_width=True):
                 st.session_state["quiz_active"] = False
                 st.rerun()
 
-        # --- LOGIKA QUIZU (WRITTEN / SELECT) ---
-        else:
+        else:  # Written / Select
             with st.container(border=True):
                 st.caption(f"Translate to: {current['direction'].split(' -> ')[1]}")
                 st.subheader(f"'{current['question']}'")
-
                 st.audio(text_to_speech(current["question"]), format="audio/mpeg")
 
                 if mode == "Written Answer":
@@ -1484,13 +1542,11 @@ with quiz_tab:
                             st.session_state["quiz_active"] = False
                             st.session_state["quiz_finished_final"] = True
                             st.rerun()
-
             st.divider()
             if st.button("Exit Quiz", type="secondary", use_container_width=True):
                 st.session_state["quiz_active"] = False
                 st.rerun()
 
-    # --- RESULT SCREEN ---
     elif st.session_state.get("quiz_finished_final", False):
         st.header("Results")
         st.balloons()
@@ -1506,115 +1562,242 @@ with quiz_tab:
                     del st.session_state[key]
             st.rerun()
 
-# 6. Grammar Quiz (NEW TAB)
-with grammar_quiz_tab:
-    st.header("Grammar Correction Quiz (Fill in the blank)")
+# 6. Grammar & Orthography Quiz (COMBINED)
+with grammar_ortho_tab:
+    st.header("Grammar & Orthography")
 
-    if not st.session_state.get(
-        "grammar_quiz_active", False
-    ) and not st.session_state.get("grammar_quiz_finished", False):
+    g_active = st.session_state.get("grammar_quiz_active", False)
+    g_finished = st.session_state.get("grammar_quiz_finished", False)
+    o_active = st.session_state.get("ortho_quiz_active", False)
+    o_finished = st.session_state.get("ortho_quiz_finished", False)
+
+    # 1. SETTINGS STATE
+    if not g_active and not g_finished and not o_active and not o_finished:
         st.subheader("Settings")
-        g_lang = st.selectbox("Select Language for Correction Quiz", LANGUAGES_INPUT)
+        quiz_type = st.radio(
+            "Select Quiz Type", ["Grammar Context", "Orthography"], horizontal=True
+        )
+        st.divider()
 
-        # Sprawdź dostępność pytań
-        client = get_qdrant_client()
-        points_count = client.count(
-            collection_name="corrections",
-            count_filter=models.Filter(
-                must=[
-                    models.FieldCondition(
-                        key="Input_Language", match=models.MatchValue(value=g_lang)
-                    )
-                ]
-            ),
-            exact=True,
-        ).count
+        if quiz_type == "Grammar Context":
+            g_lang = st.selectbox("Select Language", LANGUAGES_INPUT, key="g_lang_sel")
+            client = get_qdrant_client()
+            points_count = client.count(
+                collection_name="corrections",
+                count_filter=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="Input_Language", match=models.MatchValue(value=g_lang)
+                        )
+                    ]
+                ),
+                exact=True,
+            ).count
 
-        c_info, c_btn = st.columns([0.6, 0.4])
-        with c_btn:
-            st.write("")
-            color = "#4CAF50" if points_count >= 3 else "#FFC107"
-            bg = (
-                "rgba(76, 175, 80, 0.1)"
-                if points_count >= 3
-                else "rgba(255, 193, 7, 0.1)"
+            c_mode, c_stat = st.columns([0.6, 0.4])
+            with c_mode:
+                # --- BEZ FLASHCARDS DLA GRAMMAR ---
+                grammar_interaction = st.radio(
+                    "Input Type",
+                    ["Multiple Choice", "Written Answer"],
+                    horizontal=True,
+                    key="gm_radio",
+                )
+            with c_stat:
+                st.write("")
+                color = "#4CAF50" if points_count >= 3 else "#FFC107"
+                bg = (
+                    "rgba(76, 175, 80, 0.1)"
+                    if points_count >= 3
+                    else "rgba(255, 193, 7, 0.1)"
+                )
+                text = (
+                    f"Found {points_count} items."
+                    if points_count >= 3
+                    else f"Not enough ({points_count}). Need 3+."
+                )
+                st.markdown(
+                    f"<div style='background-color: {bg}; color: {color}; padding: 8px 15px; border-radius: 5px; border: 1px solid {color}; text-align: center; margin-top: 27px; font-weight: bold;'>{text}</div>",
+                    unsafe_allow_html=True,
+                )
+
+            if points_count >= 3:
+                num_q = st.slider(
+                    "Questions",
+                    1,
+                    min(points_count, 10),
+                    min(points_count, 5),
+                    key="g_slider",
+                )
+                if st.button("Start Grammar Quiz", use_container_width=True):
+                    st.session_state["grammar_quiz_questions"] = []
+                    st.session_state["grammar_interaction_saved"] = grammar_interaction
+                    st.session_state["go_flashcard_revealed"] = False
+                    st.session_state["go_flashcard_score"] = 0
+
+                    with st.spinner("Generating grammar questions using AI..."):
+                        questions = generate_grammar_quiz_questions(g_lang, num_q)
+                        if questions:
+                            st.session_state["grammar_quiz_questions"] = questions
+                            st.session_state["grammar_quiz_index"] = 0
+                            st.session_state["grammar_quiz_score"] = 0
+                            st.session_state["grammar_quiz_active"] = True
+                            st.session_state["grammar_quiz_submitted"] = False
+                            st.rerun()
+                        else:
+                            st.error("Failed to generate questions.")
+
+        else:  # Orthography
+            o_lang = st.selectbox(
+                "Select Language",
+                LANGUAGES_INPUT,
+                index=(
+                    LANGUAGES_INPUT.index("Polish")
+                    if "Polish" in LANGUAGES_INPUT
+                    else 0
+                ),
+                key="o_lang_sel",
             )
-            text = (
-                f"Found {points_count} items."
-                if points_count >= 3
-                else f"Not enough ({points_count}). Need 3+."
+
+            client = get_qdrant_client()
+            if "temp_ortho_mode" not in st.session_state:
+                st.session_state["temp_ortho_mode"] = "Sentences"
+
+            c_mode, c_type, c_stat = st.columns([0.3, 0.3, 0.4])
+            with c_mode:
+                ortho_mode = st.radio(
+                    "Content",
+                    ["Sentences", "Single Words"],
+                    horizontal=True,
+                    key="om_radio",
+                )
+            with c_type:
+                # --- FLASHCARDS DOSTĘPNE DLA ORTOGRAFII ---
+                if ortho_mode == "Single Words":
+                    interaction_opts = [
+                        "Multiple Choice",
+                        "Written Answer",
+                        "Flashcards",
+                    ]
+                else:
+                    interaction_opts = ["Multiple Choice", "Written Answer"]
+                ortho_interaction = st.radio(
+                    "Input Type", interaction_opts, horizontal=True, key="oi_radio"
+                )
+
+            coll_name = "corrections" if ortho_mode == "Sentences" else "translations"
+            key_field = (
+                "Input_Language" if ortho_mode == "Sentences" else "Input_Text_Language"
             )
 
-            st.markdown(
-                f"""
-                <div style="
-                    background-color: {bg}; 
-                    color: {color}; 
-                    padding: 8px 15px; 
-                    border-radius: 5px; 
-                    border: 1px solid {color}; 
-                    text-align: center; 
-                    margin-top: 27px;
-                    font-weight: bold;
-                ">
-                    {text}
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+            points_count_o = client.count(
+                collection_name=coll_name,
+                count_filter=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key=key_field, match=models.MatchValue(value=o_lang)
+                        )
+                    ]
+                ),
+                exact=True,
+            ).count
 
-        if points_count >= 3:
-            num_q = st.slider(
-                "Select number of questions",
-                1,
-                min(points_count, 10),
-                min(points_count, 5),
-            )
-            if st.button("Start Grammar Quiz", use_container_width=True):
-                # --- KLUCZOWA POPRAWKA: RESETOWANIE STANU ---
-                st.session_state["grammar_quiz_questions"] = []
+            with c_stat:
+                st.write("")
+                color = "#4CAF50" if points_count_o >= 3 else "#FFC107"
+                bg = (
+                    "rgba(76, 175, 80, 0.1)"
+                    if points_count_o >= 3
+                    else "rgba(255, 193, 7, 0.1)"
+                )
+                text = (
+                    f"Found {points_count_o} items."
+                    if points_count_o >= 3
+                    else f"Not enough ({points_count_o}). Need 3+."
+                )
+                st.markdown(
+                    f"<div style='background-color: {bg}; color: {color}; padding: 8px 15px; border-radius: 5px; border: 1px solid {color}; text-align: center; margin-top: 27px; font-weight: bold;'>{text}</div>",
+                    unsafe_allow_html=True,
+                )
 
-                with st.spinner("Generating grammar questions using AI..."):
-                    questions = generate_grammar_quiz_questions(g_lang, num_q)
-                    if questions:
-                        st.session_state["grammar_quiz_questions"] = questions
-                        st.session_state["grammar_quiz_index"] = 0
-                        st.session_state["grammar_quiz_score"] = 0
-                        st.session_state["grammar_quiz_active"] = True
-                        st.session_state["grammar_quiz_submitted"] = False
-                        st.rerun()
-                    else:
-                        st.error("Failed to generate questions. Try again.")
+            if points_count_o >= 3:
+                num_o = st.slider(
+                    "Questions",
+                    1,
+                    min(points_count_o, 10),
+                    min(points_count_o, 5),
+                    key="o_slider",
+                )
 
-    # --- ACTIVE GRAMMAR QUIZ ---
-    elif st.session_state.get("grammar_quiz_active", False):
+                if st.button("Start Orthography Quiz", use_container_width=True):
+                    st.session_state["ortho_quiz_questions"] = []
+                    st.session_state["ortho_mode_saved"] = ortho_mode
+                    st.session_state["ortho_interaction_saved"] = ortho_interaction
+                    st.session_state["go_flashcard_revealed"] = False
+                    st.session_state["go_flashcard_score"] = 0
+
+                    with st.spinner(
+                        f"Generating tricky spelling questions from your {coll_name}..."
+                    ):
+                        questions = generate_orthography_questions(
+                            o_lang, num_o, ortho_mode
+                        )
+                        if questions:
+                            st.session_state["ortho_quiz_questions"] = questions
+                            st.session_state["ortho_quiz_index"] = 0
+                            st.session_state["ortho_quiz_score"] = 0
+                            st.session_state["ortho_quiz_active"] = True
+                            st.session_state["ortho_quiz_submitted"] = False
+                            st.rerun()
+                        else:
+                            st.error("Failed to generate.")
+
+    # 2. GRAMMAR ACTIVE
+    elif g_active:
         idx = st.session_state["grammar_quiz_index"]
         questions = st.session_state["grammar_quiz_questions"]
         current = questions[idx]
+        interaction_mode = st.session_state.get(
+            "grammar_interaction_saved", "Multiple Choice"
+        )
 
-        st.write(f"Question {idx + 1} of {len(questions)}")
+        st.write(f"Grammar Question {idx + 1} of {len(questions)}")
         st.progress((idx) / len(questions))
 
+        # --- STANDARD LOGIC (ONLY) ---
         with st.container(border=True):
-            # Wyświetlamy kontekst z zabezpieczeniem .get()
             context_clue = current.get("context_clue", "No clue available")
             st.info(f"ℹ️ **Grammatical Clue:** {context_clue}")
-
             st.markdown(f"### {current['question']}")
 
-            user_ans = st.radio(
-                "Choose the missing word:",
-                current["options"],
-                key=f"g_radio_{idx}",
-                disabled=st.session_state["grammar_quiz_submitted"],
-            )
+            if interaction_mode == "Written Answer":
+                user_ans = st.text_input(
+                    "Type the missing word:",
+                    key=f"g_input_{idx}",
+                    disabled=st.session_state["grammar_quiz_submitted"],
+                )
+            else:
+                user_ans = st.radio(
+                    "Choose the missing word:",
+                    current["options"],
+                    key=f"g_radio_{idx}",
+                    disabled=st.session_state["grammar_quiz_submitted"],
+                )
 
             if not st.session_state["grammar_quiz_submitted"]:
                 if st.button("Check", use_container_width=True):
                     st.session_state["grammar_quiz_submitted"] = True
                     st.rerun()
             else:
-                if user_ans == current["answer"]:
+                is_correct = False
+                if interaction_mode == "Written Answer":
+                    if user_ans.strip().lower() == current["answer"].strip().lower():
+                        is_correct = True
+                else:
+                    if user_ans == current["answer"]:
+                        is_correct = True
+
+                if is_correct:
                     st.success(f"Correct! The word was **{current['answer']}**.")
                     if f"g_scored_{idx}" not in st.session_state:
                         st.session_state["grammar_quiz_score"] += 1
@@ -1651,19 +1834,164 @@ with grammar_quiz_tab:
             st.session_state["grammar_quiz_active"] = False
             st.rerun()
 
-    # --- GRAMMAR RESULT ---
-    elif st.session_state.get("grammar_quiz_finished", False):
-        st.header("Grammar Quiz Results")
-        st.balloons()
-        st.metric(
-            "Final Score",
-            f"{st.session_state['grammar_quiz_score']} / {len(st.session_state['grammar_quiz_questions'])}",
+    # 3. ORTHO ACTIVE
+    elif o_active:
+        idx = st.session_state["ortho_quiz_index"]
+        questions = st.session_state["ortho_quiz_questions"]
+        current = questions[idx]
+        interaction_mode = st.session_state.get(
+            "ortho_interaction_saved", "Multiple Choice"
         )
+
+        st.write(f"Orthography Question {idx + 1} of {len(questions)}")
+        st.progress((idx) / len(questions))
+
+        # --- FLASHCARD LOGIC ---
+        if interaction_mode == "Flashcards":
+            with st.container(border=True):
+                st.markdown(f"### {current['question']}")
+
+                if st.session_state["go_flashcard_revealed"]:
+                    st.divider()
+                    st.success(f"Correct Spelling: **{current['answer']}**")
+                    st.info(f"**Rule:** {current['explanation']}")
+                    if st.session_state.get("ortho_mode_saved") == "Sentences":
+                        st.audio(
+                            text_to_speech(
+                                current["question"].replace("______", current["answer"])
+                            ),
+                            format="audio/mpeg",
+                        )
+
+            if not st.session_state["go_flashcard_revealed"]:
+                if st.button("Reveal Answer", use_container_width=True):
+                    st.session_state["go_flashcard_revealed"] = True
+                    st.rerun()
+            else:
+                c_know, c_dontknow = st.columns(2)
+                with c_know:
+                    if st.button("✅ I knew it", use_container_width=True):
+                        st.session_state["go_flashcard_score"] += 1
+                        if idx < len(questions) - 1:
+                            st.session_state["ortho_quiz_index"] += 1
+                            st.session_state["go_flashcard_revealed"] = False
+                            st.rerun()
+                        else:
+                            st.session_state["ortho_quiz_score"] = st.session_state[
+                                "go_flashcard_score"
+                            ]
+                            st.session_state["ortho_quiz_active"] = False
+                            st.session_state["ortho_quiz_finished"] = True
+                            st.rerun()
+                with c_dontknow:
+                    if st.button("❌ Didn't know", use_container_width=True):
+                        if idx < len(questions) - 1:
+                            st.session_state["ortho_quiz_index"] += 1
+                            st.session_state["go_flashcard_revealed"] = False
+                            st.rerun()
+                        else:
+                            st.session_state["ortho_quiz_score"] = st.session_state[
+                                "go_flashcard_score"
+                            ]
+                            st.session_state["ortho_quiz_active"] = False
+                            st.session_state["ortho_quiz_finished"] = True
+                            st.rerun()
+
+        # --- STANDARD LOGIC ---
+        else:
+            with st.container(border=True):
+                st.markdown(f"### {current['question']}")
+
+                if interaction_mode == "Written Answer":
+                    user_ans = st.text_input(
+                        "Type the correct word:",
+                        key=f"o_input_{idx}",
+                        disabled=st.session_state["ortho_quiz_submitted"],
+                    )
+                else:
+                    user_ans = st.radio(
+                        "Choose correct spelling:",
+                        current["options"],
+                        key=f"o_radio_{idx}",
+                        disabled=st.session_state["ortho_quiz_submitted"],
+                    )
+
+                if not st.session_state["ortho_quiz_submitted"]:
+                    if st.button("Check", use_container_width=True):
+                        st.session_state["ortho_quiz_submitted"] = True
+                        st.rerun()
+                else:
+                    is_correct = False
+                    if interaction_mode == "Written Answer":
+                        if (
+                            user_ans.strip().lower()
+                            == current["answer"].strip().lower()
+                        ):
+                            is_correct = True
+                    else:
+                        if user_ans == current["answer"]:
+                            is_correct = True
+
+                    if is_correct:
+                        st.success(f"Correct! **{current['answer']}**")
+                        if f"o_scored_{idx}" not in st.session_state:
+                            st.session_state["ortho_quiz_score"] += 1
+                            st.session_state[f"o_scored_{idx}"] = True
+                    else:
+                        st.error(
+                            f"Incorrect. The correct spelling is **{current['answer']}**."
+                        )
+
+                    st.info(f"**Rule:** {current['explanation']}")
+
+                    if st.session_state.get("ortho_mode_saved") == "Sentences":
+                        st.audio(
+                            text_to_speech(
+                                current["question"].replace("______", current["answer"])
+                            ),
+                            format="audio/mpeg",
+                        )
+
+                    if idx + 1 < len(questions):
+                        if st.button("Next Question", use_container_width=True):
+                            st.session_state["ortho_quiz_index"] += 1
+                            st.session_state["ortho_quiz_submitted"] = False
+                            st.rerun()
+                    else:
+                        if st.button("Finish Quiz", use_container_width=True):
+                            st.session_state["ortho_quiz_active"] = False
+                            st.session_state["ortho_quiz_finished"] = True
+                            st.rerun()
+
+        st.divider()
+        if st.button("Exit Quiz", type="secondary", use_container_width=True):
+            st.session_state["ortho_quiz_active"] = False
+            st.rerun()
+
+    # 4. RESULTS
+    elif g_finished or o_finished:
+        st.header("Quiz Results")
+        st.balloons()
+        score = (
+            st.session_state.get("grammar_quiz_score", 0)
+            if g_finished
+            else st.session_state.get("ortho_quiz_score", 0)
+        )
+        total = (
+            len(st.session_state.get("grammar_quiz_questions", []))
+            if g_finished
+            else len(st.session_state.get("ortho_quiz_questions", []))
+        )
+
+        st.metric("Final Score", f"{score} / {total}")
+
         if st.button("Return to Menu", use_container_width=True):
             st.session_state["grammar_quiz_finished"] = False
             st.session_state["grammar_quiz_active"] = False
+            st.session_state["ortho_quiz_finished"] = False
+            st.session_state["ortho_quiz_active"] = False
             for key in list(st.session_state.keys()):
-                if key.startswith("g_scored_"):
+                if key.startswith("g_scored_") or key.startswith("o_scored_"):
                     del st.session_state[key]
             st.rerun()
 
