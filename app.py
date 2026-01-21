@@ -8,20 +8,17 @@ from audiorecorder import audiorecorder
 from qdrant_client import QdrantClient
 from qdrant_client import models
 import pandas as pd
-import os
 import random
 import uuid
 
-# ---------------------------------------------------------
-# KONFIGURACJA STRONY
-# ---------------------------------------------------------
+
 st.set_page_config(layout="wide", page_title="Language Helper")
 
 st.markdown(
     """
     <style>
         .block-container {
-            max-width: 95%;
+            max-width: 40%;
             padding-top: 1rem;
             padding-right: 1rem;
             padding-left: 1rem;
@@ -369,7 +366,7 @@ def assure_qdrant_collections_exist():
                         size=EMBEDDING_DIM, distance=models.Distance.COSINE
                     ),
                 }
-            else:  # audio_translations_v2
+            else:
                 vectors = {
                     "Transcription_Vector": models.VectorParams(
                         size=EMBEDDING_DIM, distance=models.Distance.COSINE
@@ -389,13 +386,9 @@ def assure_qdrant_collections_exist():
             )
 
 
-# --- ZMODYFIKOWANE FUNKCJE DODAWANIA Z DETEKCJĄ DUPLIKATÓW ---
-
-
 def add_translation_to_db(input_language, input, translation_language, translation):
     qdrant_client = get_qdrant_client()
 
-    # Sprawdź czy już istnieje
     exists_count = qdrant_client.count(
         collection_name="translations_v2",
         count_filter=models.Filter(
@@ -451,7 +444,6 @@ def add_vocabulary_to_db(input_language, words_list, translation_language="Engli
         )
 
         if word and trans:
-            # Sprawdź duplikat dla każdego słowa
             exists_count = qdrant_client.count(
                 collection_name="translations_v2",
                 count_filter=models.Filter(
@@ -496,7 +488,6 @@ def add_vocabulary_to_db(input_language, words_list, translation_language="Engli
 def add_correction_to_db(input_language, input, correction, diff_words, grammar_rules):
     qdrant_client = get_qdrant_client()
 
-    # Sprawdź czy ten konkretny input (z błędem) już był poprawiany
     exists_count = qdrant_client.count(
         collection_name="corrections_v2",
         count_filter=models.Filter(
@@ -542,7 +533,6 @@ def add_audio_translation_to_db(
 ):
     qdrant_client = get_qdrant_client()
 
-    # Sprawdź czy taka transkrypcja już jest w bazie
     exists_count = qdrant_client.count(
         collection_name="audio_translations_v2",
         count_filter=models.Filter(
@@ -585,16 +575,12 @@ def add_audio_translation_to_db(
     return True
 
 
-# --- USUWANIE Z BAZY ---
 def delete_from_db(collection_name, point_id):
     client = get_qdrant_client()
     client.delete(
         collection_name=collection_name,
         points_selector=models.PointIdsList(points=[point_id]),
     )
-
-
-# --- FUNKCJE WYSZUKIWANIA ---
 
 
 def list_translations(query=None, language_filter=None, target_language_filter=None):
@@ -659,7 +645,6 @@ def list_translations(query=None, language_filter=None, target_language_filter=N
 def list_corrections(query=None, language_filter=None):
     client = get_qdrant_client()
 
-    # Przygotowanie filtra językowego
     search_filter = None
     if language_filter and language_filter != "All":
         search_filter = models.Filter(
@@ -671,7 +656,6 @@ def list_corrections(query=None, language_filter=None):
         )
 
     if not query:
-        # Przewijanie bazy z uwzględnieniem filtra
         results, _ = client.scroll(
             collection_name="corrections_v2", scroll_filter=search_filter, limit=10
         )
@@ -689,7 +673,6 @@ def list_corrections(query=None, language_filter=None):
             ]
         )
     else:
-        # Wyszukiwanie semantyczne z uwzględnieniem filtra
         search_result = client.search(
             collection_name="corrections_v2",
             query_vector=("Input_Text_Vector", get_embedding(query)),
@@ -810,7 +793,6 @@ def get_quiz_data(lang1, lang2):
     return candidates
 
 
-# --- GENEROWANIE GRAMMAR QUIZ ---
 def generate_grammar_quiz_questions(language, count=5):
     client = get_qdrant_client()
     points, _ = client.scroll(
@@ -867,7 +849,6 @@ def generate_grammar_quiz_questions(language, count=5):
     return quiz_questions
 
 
-# --- GENEROWANIE ORTOGRAFII (Z BAZY) ---
 def generate_orthography_questions(language, count=5, mode="Sentences"):
     client = get_qdrant_client()
     source_texts = []
@@ -939,7 +920,6 @@ def generate_orthography_questions(language, count=5, mode="Sentences"):
     return questions
 
 
-# --- FUNKCJA WERYFIKACJI ALTERNATYW ---
 def get_semantic_alternatives(target_text, target_lang):
     client = get_qdrant_client()
     search_result = client.search(
@@ -1069,7 +1049,6 @@ for k in keys:
         else:
             st.session_state[k] = ""
 
-# --- MECHANIZM OCHRONY PRZED BŁĘDEM CACHE (KEYERROR) ---
 if (
     st.session_state.get("cached_tr_results")
     and isinstance(st.session_state["cached_tr_results"], list)
@@ -1096,9 +1075,6 @@ if (
 
 
 # API Key
-if "OPENAI_API_KEY" not in st.session_state:
-    st.session_state["OPENAI_API_KEY"] = os.getenv("OPENAI_API_KEY", "")
-
 if not st.session_state.get("OPENAI_API_KEY"):
     st.info("Enter your OpenAI API key")
     st.session_state["OPENAI_API_KEY"] = st.text_input(
@@ -1127,7 +1103,6 @@ assure_qdrant_collections_exist()
     ]
 )
 
-# ... (Tabs 1-4 Unchanged) ...
 # 1. Text Translation
 with text_tr:
     c0, c1 = st.columns(2)
@@ -1254,7 +1229,7 @@ with audio_tr:
                     "Audio Translation", value=st.session_state["TA_output_text"]
                 )
                 if st.session_state.get("TA_raw_diff_words"):
-                    with st.expander("Extracted Vocabulary (will be added to Quiz)"):
+                    with st.expander("Extracted Vocabulary"):
                         for w in st.session_state["TA_raw_diff_words"]:
                             st.write(f"**{w.word}**: {w.translation} ({w.definition})")
                 if st.session_state.get("TA_audio_out"):
@@ -1503,7 +1478,6 @@ with main_quiz_tab:
     st.header("Test your Knowledge")
     vocab_tab, grammar_tab = st.tabs(["Vocabulary", "Grammar & Orthography"])
 
-    # --- VOCABULARY SUB-TAB ---
     with vocab_tab:
         if not st.session_state.get("quiz_active", False) and not st.session_state.get(
             "quiz_finished_final", False
@@ -1616,7 +1590,7 @@ with main_quiz_tab:
                 else:
                     c_know, c_dontknow = st.columns(2)
                     with c_know:
-                        if st.button("✅ I knew it", use_container_width=True):
+                        if st.button("I knew it", use_container_width=True):
                             st.session_state["flashcard_score"] += 1
                             if idx < len(questions) - 1:
                                 st.session_state["quiz_current_index"] += 1
@@ -1630,7 +1604,7 @@ with main_quiz_tab:
                                 st.session_state["quiz_finished_final"] = True
                                 st.rerun()
                     with c_dontknow:
-                        if st.button("❌ Didn't know", use_container_width=True):
+                        if st.button("Didn't know", use_container_width=True):
                             if idx < len(questions) - 1:
                                 st.session_state["quiz_current_index"] += 1
                                 st.session_state["flashcard_revealed"] = False
@@ -1647,7 +1621,7 @@ with main_quiz_tab:
                     st.session_state["quiz_active"] = False
                     st.rerun()
 
-            else:  # Written / Select
+            else:
                 with st.container(border=True):
                     st.caption(f"Translate to: {current['direction'].split(' -> ')[1]}")
                     st.subheader(f"'{current['question']}'")
@@ -1742,7 +1716,6 @@ with main_quiz_tab:
                         del st.session_state[key]
                 st.rerun()
 
-    # --- GRAMMAR SUB-TAB ---
     with grammar_tab:
         g_active = st.session_state.get("grammar_quiz_active", False)
         g_finished = st.session_state.get("grammar_quiz_finished", False)
@@ -1829,7 +1802,7 @@ with main_quiz_tab:
                             else:
                                 st.error("Failed to generate questions.")
 
-            else:  # Orthography
+            else:
                 o_lang = st.selectbox(
                     "Select Language",
                     LANGUAGES_INPUT,
@@ -2031,7 +2004,6 @@ with main_quiz_tab:
             st.write(f"Orthography Question {idx + 1} of {len(questions)}")
             st.progress((idx) / len(questions))
 
-            # --- FLASHCARD LOGIC ---
             if interaction_mode == "Flashcards":
                 with st.container(border=True):
                     st.markdown(f"### {current['question']}")
@@ -2048,7 +2020,7 @@ with main_quiz_tab:
                 else:
                     c_know, c_dontknow = st.columns(2)
                     with c_know:
-                        if st.button("✅ I knew it", use_container_width=True):
+                        if st.button("I knew it", use_container_width=True):
                             st.session_state["go_flashcard_score"] += 1
                             if idx < len(questions) - 1:
                                 st.session_state["ortho_quiz_index"] += 1
@@ -2062,7 +2034,7 @@ with main_quiz_tab:
                                 st.session_state["ortho_quiz_finished"] = True
                                 st.rerun()
                     with c_dontknow:
-                        if st.button("❌ Didn't know", use_container_width=True):
+                        if st.button("Didn't know", use_container_width=True):
                             if idx < len(questions) - 1:
                                 st.session_state["ortho_quiz_index"] += 1
                                 st.session_state["go_flashcard_revealed"] = False
@@ -2075,7 +2047,6 @@ with main_quiz_tab:
                                 st.session_state["ortho_quiz_finished"] = True
                                 st.rerun()
 
-            # --- STANDARD LOGIC ---
             else:
                 with st.container(border=True):
                     st.markdown(f"### {current['question']}")
@@ -2175,14 +2146,13 @@ with main_quiz_tab:
                     del st.session_state[key]
             st.rerun()
 
-# 7. Search Translation (Dynamic Layout + Score)
-# ... (Database Tab content - unchanged) ...
+# 7. Search Translation
 with database_tab:
     st.header("Your Knowledge Base")
 
     tab_tr, tab_cor, tab_aud = st.tabs(["Translations", "Corrections", "Audio"])
 
-    # 7. Search Translation (Inside Nested Tab)
+    # 7. Search Translation
     with tab_tr:
         cur_mode = st.session_state.get("search_tr_mode", "None")
 
@@ -2201,7 +2171,7 @@ with database_tab:
                 placeholder="Enter text to search...",
             )
         with cols[1]:
-            filter_mode = st.selectbox(
+            st.selectbox(
                 "Filter By",
                 ["None", "Input Language", "Target Language", "Both"],
                 key="search_tr_mode",
@@ -2246,25 +2216,23 @@ with database_tab:
         ):
             df = list_translations(query_tr, f_in, f_out)
             st.session_state["cached_tr_results"] = df.to_dict("records")
-            if df.empty:
-                st.warning("No results found.")
 
         if st.session_state.get("cached_tr_results"):
             for idx, row in enumerate(st.session_state["cached_tr_results"]):
                 with st.container(border=True):
-                    c0, c1, c2, c3 = st.columns(
-                        [0.6, 0.15, 0.15, 0.1]
-                    )  # Adjusted for delete btn
+                    c0, c1, c2, c3 = st.columns([0.15, 0.4, 0.4, 0.05])
                     badge = (
-                        f"<span class='similarity-badge'>Score: {row.get('Score')}</span>"
+                        f"<div class='similarity-badge' style='margin: 5px 0;'>Score: {row.get('Score')}</div>"
                         if "Score" in row
                         else ""
                     )
+
                     with c0:
                         st.markdown(
-                            f"**{row['Input_Language']} &rarr; {row['Target_Language']}** {badge}",
-                            unsafe_allow_html=True,
+                            f"**{row['Input_Language']}**\n\n&darr;\n\n**{row['Target_Language']}**"
                         )
+                        if badge:
+                            st.markdown(badge, unsafe_allow_html=True)
                     with c1:
                         st.caption("Original")
                         st.info(row.get("Input_Text"))
@@ -2272,9 +2240,11 @@ with database_tab:
                         st.caption("Translation")
                         st.success(row.get("Translation"))
                     with c3:
-                        if st.button("🗑️", key=f"del_tr_{row['id']}"):
+                        st.write("")
+                        if st.button(
+                            "🗑️", key=f"del_tr_{row['id']}", use_container_width=True
+                        ):
                             delete_from_db("translations_v2", row["id"])
-                            # Remove from local state and refresh
                             st.session_state["cached_tr_results"] = [
                                 r
                                 for r in st.session_state["cached_tr_results"]
@@ -2282,11 +2252,9 @@ with database_tab:
                             ]
                             st.rerun()
 
-    # 8. Search Corrections (Inside Nested Tab)
+    # 8. Search Corrections
     with tab_cor:
         cur_mode_cor = st.session_state.get("search_cor_mode", "None")
-
-        # Dynamiczny układ kolumn
         if cur_mode_cor == "None":
             cols_cor = st.columns([0.7, 0.3])
         else:
@@ -2299,7 +2267,6 @@ with database_tab:
                 label_visibility="collapsed",
                 placeholder="Enter text to search corrections...",
             )
-
         with cols_cor[1]:
             st.selectbox(
                 "Filter By",
@@ -2323,23 +2290,21 @@ with database_tab:
         ):
             df = list_corrections(query_cor, f_in_cor)
             st.session_state["cached_cor_results"] = df.to_dict("records")
-            if df.empty:
-                st.warning("No results found in corrections.")
 
         if st.session_state.get("cached_cor_results"):
             for idx, row in enumerate(st.session_state["cached_cor_results"]):
                 with st.container(border=True):
-                    c0, c1, c2, c3 = st.columns([0.6, 0.15, 0.15, 0.1])
+                    c0, c1, c2, c3 = st.columns([0.15, 0.4, 0.4, 0.05])
                     badge = (
-                        f"<span class='similarity-badge'>Score: {row.get('Score')}</span>"
+                        f"<div class='similarity-badge' style='margin: 5px 0;'>Score: {row.get('Score')}</div>"
                         if "Score" in row
                         else ""
                     )
+
                     with c0:
-                        st.markdown(
-                            f"**{row['Input_Language']}** {badge}",
-                            unsafe_allow_html=True,
-                        )
+                        st.markdown(f"**{row['Input_Language']}**")
+                        if badge:
+                            st.markdown(badge, unsafe_allow_html=True)
                     with c1:
                         st.caption("Original")
                         st.error(row.get("Input_Text"))
@@ -2347,7 +2312,10 @@ with database_tab:
                         st.caption("Corrected")
                         st.success(row.get("Correction"))
                     with c3:
-                        if st.button("🗑️", key=f"del_cor_{row['id']}"):
+                        st.write("")
+                        if st.button(
+                            "🗑️", key=f"del_cor_{row['id']}", use_container_width=True
+                        ):
                             delete_from_db("corrections_v2", row["id"])
                             st.session_state["cached_cor_results"] = [
                                 r
@@ -2357,16 +2325,13 @@ with database_tab:
                             st.rerun()
 
                     with st.expander("Explanations"):
-                        st.markdown("**Tricky Words:**")
-                        st.write(row.get("Difficult_Words"))
+                        st.markdown(row.get("Difficult_Words"))
                         st.divider()
-                        st.markdown("**Grammar Rules:**")
-                        st.write(row.get("Grammar_Rules"))
-    # 9. Search Audio (Inside Nested Tab)
+                        st.markdown(row.get("Grammar_Rules"))
+
+    # 9. Search Audio Translation
     with tab_aud:
         cur_mode_aud = st.session_state.get("search_aud_mode", "None")
-
-        # Dynamiczny układ kolumn w zależności od trybu filtra
         if cur_mode_aud == "None":
             cols_aud = st.columns([0.7, 0.3])
         elif cur_mode_aud == "Both":
@@ -2381,7 +2346,6 @@ with database_tab:
                 label_visibility="collapsed",
                 placeholder="Search transcriptions...",
             )
-
         with cols_aud[1]:
             st.selectbox(
                 "Filter By",
@@ -2391,8 +2355,6 @@ with database_tab:
             )
 
         f_in_aud = f_out_aud = None
-
-        # Logika wyświetlania dodatkowych selectboxów
         if cur_mode_aud == "Input Language":
             with cols_aud[2]:
                 f_in_aud = st.selectbox(
@@ -2428,26 +2390,23 @@ with database_tab:
         if st.button("Search Audio", use_container_width=True, key="search_audio_btn"):
             df = list_audio_translations(query_audio, f_in_aud, f_out_aud)
             st.session_state["cached_audio_results"] = df.to_dict("records")
-            if df.empty:
-                st.warning("No results found.")
 
         if st.session_state.get("cached_audio_results"):
             for idx, row in enumerate(st.session_state["cached_audio_results"]):
                 with st.container(border=True):
-                    c0, c1, c2, c3 = st.columns([0.6, 0.15, 0.15, 0.1])
+                    c0, c1, c2, c3 = st.columns([0.15, 0.4, 0.4, 0.05])
                     badge = (
-                        f"<span class='similarity-badge'>Score: {row.get('Score')}</span>"
+                        f"<div class='similarity-badge' style='margin: 5px 0;'>Score: {row.get('Score')}</div>"
                         if "Score" in row
                         else ""
                     )
 
-                    # Wyświetlanie kierunku tłumaczenia w nagłówku
                     with c0:
                         st.markdown(
-                            f"**{row['Input_Language']} &rarr; {row.get('Target_Language', '?')}** {badge}",
-                            unsafe_allow_html=True,
+                            f"**{row['Input_Language']}**\n\n&darr;\n\n**{row.get('Target_Language', '?')}**"
                         )
-
+                        if badge:
+                            st.markdown(badge, unsafe_allow_html=True)
                     with c1:
                         st.caption("Transcription")
                         st.info(row.get("Transcription"))
@@ -2455,7 +2414,10 @@ with database_tab:
                         st.caption("Translation")
                         st.success(row.get("Translation"))
                     with c3:
-                        if st.button("🗑️", key=f"del_aud_{row['id']}"):
+                        st.write("")
+                        if st.button(
+                            "🗑️", key=f"del_aud_{row['id']}", use_container_width=True
+                        ):
                             delete_from_db("audio_translations_v2", row["id"])
                             st.session_state["cached_audio_results"] = [
                                 r
