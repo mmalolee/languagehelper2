@@ -244,7 +244,7 @@ def get_corr_words_and_grammar(to_correct, input_language):
                     2. Extract difficult vocabulary, phrasal verbs, or idioms from the input text.
                        - 'word': Provide the **base dictionary form (lemma)** of the word in {input_language}.
                        - 'translation': The direct, short translation in English.
-                       - 'definition': A short explanation or definition in English to provide context.
+                       - 'definition': A short explanation or definition STRICTLY IN ENGLISH to provide context.
                     3. Explain any difficult or tricky grammatical constructions found in the original text.
                     4. All explanations must be given in English.
                     """,
@@ -296,7 +296,7 @@ def translate_transcription(transcription, output_language):
                 3. Extract difficult vocabulary, phrasal verbs, or idioms from the SOURCE text.
                    - For 'word': provide the base dictionary form (lemma).
                    - For 'translation': provide ONLY the direct translation in {output_language}.
-                   - For 'definition': provide a short definition/context in {output_language}.""",
+                   - For 'definition': provide a short definition/context STRICTLY IN ENGLISH.""",
             },
             {"role": "user", "content": transcription.strip()},
         ],
@@ -941,7 +941,6 @@ for k in keys:
             st.session_state[k] = ""
 
 # --- MECHANIZM OCHRONY PRZED BŁĘDEM CACHE (KEYERROR) ---
-# Jeśli w cache są stare rekordy bez ID, czyścimy je
 if (
     st.session_state.get("cached_tr_results")
     and isinstance(st.session_state["cached_tr_results"], list)
