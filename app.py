@@ -47,6 +47,11 @@ st.markdown(
         .stMarkdown h1, .stMarkdown h2, .stMarkdown h3 {
             text-align: center !important;
         }
+        
+        /* Styl przycisku usuwania */
+        div[data-testid="stButton"] button {
+            /* Domyślny styl */
+        }
     </style>
 """,
     unsafe_allow_html=True,
@@ -384,8 +389,31 @@ def assure_qdrant_collections_exist():
             )
 
 
+# --- ZMODYFIKOWANE FUNKCJE DODAWANIA Z DETEKCJĄ DUPLIKATÓW ---
+
+
 def add_translation_to_db(input_language, input, translation_language, translation):
     qdrant_client = get_qdrant_client()
+
+    # Sprawdź czy już istnieje
+    exists_count = qdrant_client.count(
+        collection_name="translations_v2",
+        count_filter=models.Filter(
+            must=[
+                models.FieldCondition(
+                    key="Input_Text", match=models.MatchValue(value=input)
+                ),
+                models.FieldCondition(
+                    key="Translation_Language",
+                    match=models.MatchValue(value=translation_language),
+                ),
+            ]
+        ),
+    ).count
+
+    if exists_count > 0:
+        return False  # Duplikat
+
     point_id = str(uuid.uuid4())
     qdrant_client.upsert(
         collection_name="translations_v2",
@@ -407,6 +435,7 @@ def add_translation_to_db(input_language, input, translation_language, translati
             )
         ],
     )
+    return True  # Sukces
 
 
 def add_vocabulary_to_db(input_language, words_list, translation_language="English"):
@@ -414,40 +443,74 @@ def add_vocabulary_to_db(input_language, words_list, translation_language="Engli
         return
     qdrant_client = get_qdrant_client()
     for item in words_list:
-        point_id = str(uuid.uuid4())
         word = item.word if hasattr(item, "word") else item.get("word", "")
         trans = (
             item.translation
             if hasattr(item, "translation")
             else item.get("translation", "")
         )
+
         if word and trans:
-            qdrant_client.upsert(
+            # Sprawdź duplikat dla każdego słowa
+            exists_count = qdrant_client.count(
                 collection_name="translations_v2",
-                points=[
-                    models.PointStruct(
-                        id=point_id,
-                        vector={
-                            "Input_Language_Vector": get_embedding(input_language),
-                            "Input_Vector": get_embedding(word),
-                            "Translation_Language_Vector": get_embedding(
-                                translation_language
-                            ),
-                            "Translation_Vector": get_embedding(trans),
-                        },
-                        payload={
-                            "Input_Text_Language": input_language,
-                            "Input_Text": word,
-                            "Translation_Language": translation_language,
-                            "Translation": trans,
-                        },
-                    )
-                ],
-            )
+                count_filter=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="Input_Text", match=models.MatchValue(value=word)
+                        ),
+                        models.FieldCondition(
+                            key="Translation_Language",
+                            match=models.MatchValue(value=translation_language),
+                        ),
+                    ]
+                ),
+            ).count
+
+            if exists_count == 0:
+                point_id = str(uuid.uuid4())
+                qdrant_client.upsert(
+                    collection_name="translations_v2",
+                    points=[
+                        models.PointStruct(
+                            id=point_id,
+                            vector={
+                                "Input_Language_Vector": get_embedding(input_language),
+                                "Input_Vector": get_embedding(word),
+                                "Translation_Language_Vector": get_embedding(
+                                    translation_language
+                                ),
+                                "Translation_Vector": get_embedding(trans),
+                            },
+                            payload={
+                                "Input_Text_Language": input_language,
+                                "Input_Text": word,
+                                "Translation_Language": translation_language,
+                                "Translation": trans,
+                            },
+                        )
+                    ],
+                )
 
 
 def add_correction_to_db(input_language, input, correction, diff_words, grammar_rules):
     qdrant_client = get_qdrant_client()
+
+    # Sprawdź czy ten konkretny input (z błędem) już był poprawiany
+    exists_count = qdrant_client.count(
+        collection_name="corrections_v2",
+        count_filter=models.Filter(
+            must=[
+                models.FieldCondition(
+                    key="Input_Text", match=models.MatchValue(value=input)
+                )
+            ]
+        ),
+    ).count
+
+    if exists_count > 0:
+        return False
+
     point_id = str(uuid.uuid4())
     qdrant_client.upsert(
         collection_name="corrections_v2",
@@ -471,12 +534,33 @@ def add_correction_to_db(input_language, input, correction, diff_words, grammar_
             )
         ],
     )
+    return True
 
 
 def add_audio_translation_to_db(
     input_language, transcription, translation_language, translation
 ):
     qdrant_client = get_qdrant_client()
+
+    # Sprawdź czy taka transkrypcja już jest w bazie
+    exists_count = qdrant_client.count(
+        collection_name="audio_translations_v2",
+        count_filter=models.Filter(
+            must=[
+                models.FieldCondition(
+                    key="Transcription", match=models.MatchValue(value=transcription)
+                ),
+                models.FieldCondition(
+                    key="Translation_Language",
+                    match=models.MatchValue(value=translation_language),
+                ),
+            ]
+        ),
+    ).count
+
+    if exists_count > 0:
+        return False
+
     point_id = str(uuid.uuid4())
     qdrant_client.upsert(
         collection_name="audio_translations_v2",
@@ -498,6 +582,7 @@ def add_audio_translation_to_db(
             )
         ],
     )
+    return True
 
 
 # --- USUWANIE Z BAZY ---
@@ -1067,13 +1152,17 @@ with text_tr:
 
     if save_button:
         if st.session_state["TT_translate_text_output"]:
-            add_translation_to_db(
+            success = add_translation_to_db(
                 st.session_state["TT_input_language"],
                 st.session_state["TT_translate_text_input"],
                 st.session_state["TT_output_language"],
                 st.session_state["TT_translate_text_output"],
             )
-            st.toast("Translation Has Been Saved!")
+            if success:
+                st.toast("Translation Has Been Saved!")
+            else:
+                st.warning("This translation already exists in the database.")
+
             st.session_state["TT_translate_text_output"] = ""
             st.session_state["TT_audio_in"] = None
             st.session_state["TT_audio_out"] = None
@@ -1129,23 +1218,27 @@ with audio_tr:
 
         if save_button:
             if st.session_state["TA_output_text"]:
-                add_audio_translation_to_db(
+                success = add_audio_translation_to_db(
                     st.session_state["TA_input_language"],
                     st.session_state["TA_input_transcription"],
                     st.session_state["TA_output_language"],
                     st.session_state["TA_output_text"],
                 )
-                if (
-                    "TA_raw_diff_words" in st.session_state
-                    and st.session_state["TA_raw_diff_words"]
-                ):
-                    add_vocabulary_to_db(
-                        st.session_state["TA_input_language"],
-                        st.session_state["TA_raw_diff_words"],
-                        st.session_state["TA_output_language"],
-                    )
-                    st.toast("Vocabulary added to Quiz!")
-                st.toast("Audio Translation Has Been Saved!")
+                if success:
+                    if (
+                        "TA_raw_diff_words" in st.session_state
+                        and st.session_state["TA_raw_diff_words"]
+                    ):
+                        add_vocabulary_to_db(
+                            st.session_state["TA_input_language"],
+                            st.session_state["TA_raw_diff_words"],
+                            st.session_state["TA_output_language"],
+                        )
+                        st.toast("Vocabulary added to Quiz!")
+                    st.toast("Audio Translation Has Been Saved!")
+                else:
+                    st.warning("This audio translation already exists.")
+
                 st.session_state["TA_output_text"] = ""
                 st.session_state["TA_output_text"] = ""
                 st.session_state["TA_audio_out"] = None
@@ -1226,24 +1319,28 @@ with text_cor:
 
     if save_button:
         if st.session_state["CT_output_text"]:
-            add_correction_to_db(
+            success = add_correction_to_db(
                 st.session_state["CT_input_language"],
                 st.session_state["CT_input_text"],
                 st.session_state["CT_output_text"],
                 st.session_state["CT_diff_words"],
                 st.session_state["CT_grammar_rules"],
             )
-            if (
-                "CT_raw_diff_words" in st.session_state
-                and st.session_state["CT_raw_diff_words"]
-            ):
-                add_vocabulary_to_db(
-                    st.session_state["CT_input_language"],
-                    st.session_state["CT_raw_diff_words"],
-                    "English",
-                )
-                st.toast("Vocabulary from correction added to Quiz!")
-            st.toast("Correction Has Been Saved!")
+            if success:
+                if (
+                    "CT_raw_diff_words" in st.session_state
+                    and st.session_state["CT_raw_diff_words"]
+                ):
+                    add_vocabulary_to_db(
+                        st.session_state["CT_input_language"],
+                        st.session_state["CT_raw_diff_words"],
+                        "English",
+                    )
+                    st.toast("Vocabulary from correction added to Quiz!")
+                st.toast("Correction Has Been Saved!")
+            else:
+                st.warning("This correction already exists.")
+
             st.session_state["CT_output_text"] = ""
             st.session_state["CT_audio_out"] = None
         else:
@@ -1332,21 +1429,25 @@ with speech_cor:
 
     if save_button:
         if st.session_state.get("CS_output_as_text"):
-            add_correction_to_db(
+            success = add_correction_to_db(
                 st.session_state["CS_input_language"],
                 st.session_state["CS_input_speech_as_text"],
                 st.session_state["CS_output_as_text"],
                 st.session_state["CS_diff_words"],
                 st.session_state["CS_grammar_rules"],
             )
-            if "CS_raw_diff_words" in st.session_state:
-                add_vocabulary_to_db(
-                    st.session_state["CS_input_language"],
-                    st.session_state["CS_raw_diff_words"],
-                    "English",
-                )
-                st.toast("Difficult words added to your Quiz database!")
-            st.toast("Correction saved!")
+            if success:
+                if "CS_raw_diff_words" in st.session_state:
+                    add_vocabulary_to_db(
+                        st.session_state["CS_input_language"],
+                        st.session_state["CS_raw_diff_words"],
+                        "English",
+                    )
+                    st.toast("Difficult words added to your Quiz database!")
+                st.toast("Correction saved!")
+            else:
+                st.warning("This speech correction already exists.")
+
             st.session_state["CS_output_as_text"] = ""
             st.session_state["CS_input_speech_as_text"] = ""
             st.session_state["CS_audio_out"] = None
@@ -2129,7 +2230,7 @@ with database_tab:
                     with c3:
                         if st.button("🗑️", key=f"del_tr_{row['id']}"):
                             delete_from_db("translations_v2", row["id"])
-                            # Remove from local state
+                            # Remove from local state and refresh
                             st.session_state["cached_tr_results"] = [
                                 r
                                 for r in st.session_state["cached_tr_results"]
