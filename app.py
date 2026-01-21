@@ -950,27 +950,14 @@ if not st.session_state.get("OPENAI_API_KEY"):
 st.title("Language Helper")
 assure_qdrant_collections_exist()
 
-(
-    text_tr,
-    audio_tr,
-    text_cor,
-    speech_cor,
-    quiz_tab,
-    grammar_ortho_tab,
-    search_tr,
-    search_cor,
-    search_aud,
-) = st.tabs(
+(text_tr, audio_tr, text_cor, speech_cor, main_quiz_tab, database_tab) = st.tabs(
     [
         "Translate Text",
         "Translate Audio",
         "Correct Text",
         "Record & Correct",
-        "Vocabulary Quiz",
-        "Grammar & Orthography",
-        "Search Translations",
-        "Search Corrections",
-        "Staudio",
+        "🧠 Quizzes",
+        " 📂 Database & Search",
     ]
 )
 
@@ -1031,7 +1018,7 @@ with text_tr:
     if st.session_state.get("TT_translate_text_output"):
         with c0:
             if st.session_state.get("TT_audio_in"):
-                st.audio(st.session_state["TT_audio_in"], format="audio/mpeg")
+                st.audio(st.session_state.get("TT_audio_in"), format="audio/mpeg")
         with c1:
             st.text_area(
                 "Translation",
@@ -1039,7 +1026,7 @@ with text_tr:
                 value=st.session_state["TT_translate_text_output"],
             )
             if st.session_state.get("TT_audio_out"):
-                st.audio(st.session_state["TT_audio_out"], format="audio/mpeg")
+                st.audio(st.session_state.get("TT_audio_out"), format="audio/mpeg")
 
     if save_button:
         if st.session_state["TT_translate_text_output"]:
@@ -1101,7 +1088,7 @@ with audio_tr:
                         for w in st.session_state["TA_raw_diff_words"]:
                             st.write(f"**{w.word}**: {w.translation} ({w.definition})")
                 if st.session_state.get("TA_audio_out"):
-                    st.audio(st.session_state["TA_audio_out"], format="audio/mpeg")
+                    st.audio(st.session_state.get("TA_audio_out"), format="audio/mpeg")
 
         if save_button:
             if st.session_state["TA_output_text"]:
@@ -1197,7 +1184,7 @@ with text_cor:
                 st.text_area("", value=st.session_state["CT_grammar_rules"])
             with st.expander("Pronunciation"):
                 if st.session_state.get("CT_audio_out"):
-                    st.audio(st.session_state["CT_audio_out"], format="audio/mpeg")
+                    st.audio(st.session_state.get("CT_audio_out"), format="audio/mpeg")
 
     if save_button:
         if st.session_state["CT_output_text"]:
@@ -1303,7 +1290,7 @@ with speech_cor:
                 st.text_area("", value=st.session_state["CS_grammar_rules"])
             with st.expander("Pronunciation"):
                 if st.session_state.get("CS_audio_out"):
-                    st.audio(st.session_state["CS_audio_out"], format="audio/mpeg")
+                    st.audio(st.session_state.get("CS_audio_out"), format="audio/mpeg")
 
     if save_button:
         if st.session_state.get("CS_output_as_text"):
@@ -1328,597 +1315,476 @@ with speech_cor:
         else:
             st.warning("No Correction to Save")
 
-# 5. Vocabulary Quiz
-with quiz_tab:
-    st.header("Vocabulary & Flashcards")
+# 5. Combined Quiz Tab
+with main_quiz_tab:
+    st.header("Test your Knowledge")
+    vocab_tab, grammar_tab = st.tabs(["Vocabulary", "Grammar & Orthography"])
 
-    if not st.session_state.get("quiz_active", False) and not st.session_state.get(
-        "quiz_finished_final", False
-    ):
-        st.subheader("Settings")
-        c1, c2 = st.columns(2)
-        with c1:
-            q_lang1 = st.selectbox("Language 1", LANGUAGES_INPUT, key="q_lang1")
-        with c2:
-            q_lang2 = st.selectbox("Language 2", LANGUAGES_OUTPUT, key="q_lang2")
+    # --- VOCABULARY SUB-TAB ---
+    with vocab_tab:
+        if not st.session_state.get("quiz_active", False) and not st.session_state.get(
+            "quiz_finished_final", False
+        ):
+            st.subheader("Settings")
+            c1, c2 = st.columns(2)
+            with c1:
+                q_lang1 = st.selectbox("Language 1", LANGUAGES_INPUT, key="q_lang1")
+            with c2:
+                q_lang2 = st.selectbox("Language 2", LANGUAGES_OUTPUT, key="q_lang2")
 
-        candidates = get_quiz_data(q_lang1, q_lang2)
-        count = len(candidates)
+            candidates = get_quiz_data(q_lang1, q_lang2)
+            count = len(candidates)
 
-        c_mode, c_stat = st.columns([0.6, 0.4])
-        with c_mode:
-            quiz_mode = st.radio(
-                "Select Mode",
-                ["Written Answer", "Select Translation", "Flashcards"],
-                horizontal=True,
-            )
-        with c_stat:
-            st.write("")
-            color = "#4CAF50" if count >= 3 else "#FFC107"
-            bg = "rgba(76, 175, 80, 0.1)" if count >= 3 else "rgba(255, 193, 7, 0.1)"
-            text = (
-                f"Found {count} items."
-                if count >= 3
-                else f"Not enough items ({count}). Need 3+."
-            )
-            st.markdown(
-                f"<div style='background-color: {bg}; color: {color}; padding: 8px 15px; border-radius: 5px; border: 1px solid {color}; text-align: center; margin-top: 27px; font-weight: bold;'>{text}</div>",
-                unsafe_allow_html=True,
-            )
-
-        if q_lang1 == q_lang2:
-            st.error("Please select two different languages.")
-        elif count >= 3:
-            num_q = st.slider(
-                "Select number of items", 1, min(count, 20), min(count, 5)
-            )
-
-            if st.button("Start", use_container_width=True):
-                selected = random.sample(candidates, num_q)
-                if quiz_mode == "Select Translation":
-                    for item in selected:
-                        same_dir_candidates = [
-                            c for c in candidates if c["direction"] == item["direction"]
-                        ]
-                        other = [
-                            c["answer"]
-                            for c in same_dir_candidates
-                            if c["answer"] != item["answer"]
-                        ]
-                        pool_size = len(other)
-                        distractors = random.sample(other, min(3, pool_size))
-                        options = distractors + [item["answer"]]
-                        random.shuffle(options)
-                        item["options"] = options
-
-                st.session_state["quiz_questions"] = selected
-                st.session_state["quiz_mode"] = quiz_mode
-                st.session_state["quiz_current_index"] = 0
-                st.session_state["quiz_score"] = 0
-                st.session_state["quiz_active"] = True
-                st.session_state["quiz_submitted"] = False
-                if quiz_mode == "Flashcards":
-                    st.session_state["flashcard_revealed"] = False
-                    st.session_state["flashcard_score"] = 0
-                st.rerun()
-
-    elif st.session_state.get("quiz_active", False):
-        idx = st.session_state["quiz_current_index"]
-        questions = st.session_state["quiz_questions"]
-        current = questions[idx]
-        mode = st.session_state["quiz_mode"]
-
-        st.write(f"Item {idx + 1} of {len(questions)}")
-        st.progress((idx) / len(questions))
-
-        if mode == "Flashcards":
-            with st.container(border=True):
-                st.caption(f"Translate to: {current['direction'].split(' -> ')[1]}")
+            c_mode, c_stat = st.columns([0.6, 0.4])
+            with c_mode:
+                quiz_mode = st.radio(
+                    "Select Mode",
+                    ["Written Answer", "Select Translation", "Flashcards"],
+                    horizontal=True,
+                )
+            with c_stat:
+                st.write("")
+                color = "#4CAF50" if count >= 3 else "#FFC107"
+                bg = (
+                    "rgba(76, 175, 80, 0.1)" if count >= 3 else "rgba(255, 193, 7, 0.1)"
+                )
+                text = (
+                    f"Found {count} items."
+                    if count >= 3
+                    else f"Not enough items ({count}). Need 3+."
+                )
                 st.markdown(
-                    f"<h2 style='text-align: center;'>{current['question']}</h2>",
+                    f"<div style='background-color: {bg}; color: {color}; padding: 8px 15px; border-radius: 5px; border: 1px solid {color}; text-align: center; margin-top: 27px; font-weight: bold;'>{text}</div>",
                     unsafe_allow_html=True,
                 )
-                if st.session_state["flashcard_revealed"]:
-                    st.divider()
+
+            if q_lang1 == q_lang2:
+                st.error("Please select two different languages.")
+            elif count >= 3:
+                num_q = st.slider(
+                    "Select number of items", 1, min(count, 20), min(count, 5)
+                )
+
+                if st.button("Start", use_container_width=True):
+                    selected = random.sample(candidates, num_q)
+                    if quiz_mode == "Select Translation":
+                        for item in selected:
+                            same_dir_candidates = [
+                                c
+                                for c in candidates
+                                if c["direction"] == item["direction"]
+                            ]
+                            other = [
+                                c["answer"]
+                                for c in same_dir_candidates
+                                if c["answer"] != item["answer"]
+                            ]
+                            pool_size = len(other)
+                            distractors = random.sample(other, min(3, pool_size))
+                            options = distractors + [item["answer"]]
+                            random.shuffle(options)
+                            item["options"] = options
+
+                    st.session_state["quiz_questions"] = selected
+                    st.session_state["quiz_mode"] = quiz_mode
+                    st.session_state["quiz_current_index"] = 0
+                    st.session_state["quiz_score"] = 0
+                    st.session_state["quiz_active"] = True
+                    st.session_state["quiz_submitted"] = False
+                    if quiz_mode == "Flashcards":
+                        st.session_state["flashcard_revealed"] = False
+                        st.session_state["flashcard_score"] = 0
+                    st.rerun()
+
+        elif st.session_state.get("quiz_active", False):
+            idx = st.session_state["quiz_current_index"]
+            questions = st.session_state["quiz_questions"]
+            current = questions[idx]
+            mode = st.session_state["quiz_mode"]
+
+            st.write(f"Item {idx + 1} of {len(questions)}")
+            st.progress((idx) / len(questions))
+
+            if mode == "Flashcards":
+                with st.container(border=True):
+                    st.caption(f"Translate to: {current['direction'].split(' -> ')[1]}")
                     st.markdown(
-                        f"<h2 style='text-align: center; color: #4CAF50;'>{current['answer']}</h2>",
+                        f"<h2 style='text-align: center;'>{current['question']}</h2>",
                         unsafe_allow_html=True,
                     )
-                    st.audio(text_to_speech(current["answer"]), format="audio/mpeg")
-                    with st.spinner("Checking for synonyms..."):
-                        alts = get_semantic_alternatives(
-                            current["answer"], current["target_lang"]
+                    if st.session_state["flashcard_revealed"]:
+                        st.divider()
+                        st.markdown(
+                            f"<h2 style='text-align: center; color: #4CAF50;'>{current['answer']}</h2>",
+                            unsafe_allow_html=True,
                         )
-                        if alts:
-                            st.info(f"💡 Also correct: {', '.join(alts)}")
-
-            if not st.session_state["flashcard_revealed"]:
-                if st.button("Reveal Answer", use_container_width=True):
-                    st.session_state["flashcard_revealed"] = True
-                    st.rerun()
-            else:
-                c_know, c_dontknow = st.columns(2)
-                with c_know:
-                    if st.button("✅ I knew it", use_container_width=True):
-                        st.session_state["flashcard_score"] += 1
-                        if idx < len(questions) - 1:
-                            st.session_state["quiz_current_index"] += 1
-                            st.session_state["flashcard_revealed"] = False
-                            st.rerun()
-                        else:
-                            st.session_state["quiz_score"] = st.session_state[
-                                "flashcard_score"
-                            ]
-                            st.session_state["quiz_active"] = False
-                            st.session_state["quiz_finished_final"] = True
-                            st.rerun()
-                with c_dontknow:
-                    if st.button("❌ Didn't know", use_container_width=True):
-                        if idx < len(questions) - 1:
-                            st.session_state["quiz_current_index"] += 1
-                            st.session_state["flashcard_revealed"] = False
-                            st.rerun()
-                        else:
-                            st.session_state["quiz_score"] = st.session_state[
-                                "flashcard_score"
-                            ]
-                            st.session_state["quiz_active"] = False
-                            st.session_state["quiz_finished_final"] = True
-                            st.rerun()
-            st.divider()
-            if st.button("Exit Quiz", type="secondary", use_container_width=True):
-                st.session_state["quiz_active"] = False
-                st.rerun()
-
-        else:  # Written / Select
-            with st.container(border=True):
-                st.caption(f"Translate to: {current['direction'].split(' -> ')[1]}")
-                st.subheader(f"'{current['question']}'")
-                st.audio(text_to_speech(current["question"]), format="audio/mpeg")
-
-                if mode == "Written Answer":
-                    user_ans = st.text_input(
-                        "Your answer:",
-                        key=f"input_q_{idx}",
-                        disabled=st.session_state["quiz_submitted"],
-                    )
-                else:
-                    user_ans = st.radio(
-                        "Choose correct translation:",
-                        current["options"],
-                        key=f"radio_q_{idx}",
-                        disabled=st.session_state["quiz_submitted"],
-                    )
-
-                if not st.session_state["quiz_submitted"]:
-                    if st.button("Check Answer", use_container_width=True):
-                        st.session_state["quiz_submitted"] = True
-                        st.rerun()
-                else:
-                    is_correct = False
-                    if user_ans.strip().lower() == current["answer"].strip().lower():
-                        is_correct = True
-                    elif mode == "Written Answer":
-                        with st.spinner("Checking synonyms..."):
-                            synonyms = get_semantic_alternatives(
-                                current["answer"], current["target_lang"]
-                            )
-                            synonyms_lower = [s.lower() for s in synonyms]
-                            if user_ans.strip().lower() in synonyms_lower:
-                                is_correct = True
-                                st.success(
-                                    f"Correct! The primary answer is '{current['answer']}', but you used a valid synonym."
-                                )
-
-                    if is_correct:
-                        if f"scored_{idx}" not in st.session_state:
-                            st.session_state["quiz_score"] += 1
-                            st.session_state[f"scored_{idx}"] = True
-                        if (
-                            user_ans.strip().lower()
-                            == current["answer"].strip().lower()
-                        ):
-                            st.success(f"Correct. Answer: {current['answer']}")
-                    else:
-                        st.error(f"Incorrect. Answer: {current['answer']}")
-                        with st.spinner("Checking DB for alternatives..."):
+                        st.audio(text_to_speech(current["answer"]), format="audio/mpeg")
+                        with st.spinner("Checking for synonyms..."):
                             alts = get_semantic_alternatives(
                                 current["answer"], current["target_lang"]
                             )
                             if alts:
-                                st.info(
-                                    f"💡 Valid alternatives found in DB: {', '.join(alts)}"
-                                )
+                                st.info(f"💡 Also correct: {', '.join(alts)}")
 
-                    st.audio(text_to_speech(current["answer"]), format="audio/mpeg")
+                if not st.session_state["flashcard_revealed"]:
+                    if st.button("Reveal Answer", use_container_width=True):
+                        st.session_state["flashcard_revealed"] = True
+                        st.rerun()
+                else:
+                    c_know, c_dontknow = st.columns(2)
+                    with c_know:
+                        if st.button("✅ I knew it", use_container_width=True):
+                            st.session_state["flashcard_score"] += 1
+                            if idx < len(questions) - 1:
+                                st.session_state["quiz_current_index"] += 1
+                                st.session_state["flashcard_revealed"] = False
+                                st.rerun()
+                            else:
+                                st.session_state["quiz_score"] = st.session_state[
+                                    "flashcard_score"
+                                ]
+                                st.session_state["quiz_active"] = False
+                                st.session_state["quiz_finished_final"] = True
+                                st.rerun()
+                    with c_dontknow:
+                        if st.button("❌ Didn't know", use_container_width=True):
+                            if idx < len(questions) - 1:
+                                st.session_state["quiz_current_index"] += 1
+                                st.session_state["flashcard_revealed"] = False
+                                st.rerun()
+                            else:
+                                st.session_state["quiz_score"] = st.session_state[
+                                    "flashcard_score"
+                                ]
+                                st.session_state["quiz_active"] = False
+                                st.session_state["quiz_finished_final"] = True
+                                st.rerun()
+                st.divider()
+                if st.button("Exit Quiz", type="secondary", use_container_width=True):
+                    st.session_state["quiz_active"] = False
+                    st.rerun()
 
-                    if idx + 1 < len(questions):
-                        if st.button("Next Question", use_container_width=True):
-                            st.session_state["quiz_current_index"] += 1
-                            st.session_state["quiz_submitted"] = False
+            else:  # Written / Select
+                with st.container(border=True):
+                    st.caption(f"Translate to: {current['direction'].split(' -> ')[1]}")
+                    st.subheader(f"'{current['question']}'")
+                    st.audio(text_to_speech(current["question"]), format="audio/mpeg")
+
+                    if mode == "Written Answer":
+                        user_ans = st.text_input(
+                            "Your answer:",
+                            key=f"input_q_{idx}",
+                            disabled=st.session_state["quiz_submitted"],
+                        )
+                    else:
+                        user_ans = st.radio(
+                            "Choose correct translation:",
+                            current["options"],
+                            key=f"radio_q_{idx}",
+                            disabled=st.session_state["quiz_submitted"],
+                        )
+
+                    if not st.session_state["quiz_submitted"]:
+                        if st.button("Check Answer", use_container_width=True):
+                            st.session_state["quiz_submitted"] = True
                             st.rerun()
                     else:
-                        if st.button("Finish Quiz", use_container_width=True):
-                            st.session_state["quiz_active"] = False
-                            st.session_state["quiz_finished_final"] = True
-                            st.rerun()
-            st.divider()
-            if st.button("Exit Quiz", type="secondary", use_container_width=True):
+                        is_correct = False
+                        if (
+                            user_ans.strip().lower()
+                            == current["answer"].strip().lower()
+                        ):
+                            is_correct = True
+                        elif mode == "Written Answer":
+                            with st.spinner("Checking synonyms..."):
+                                synonyms = get_semantic_alternatives(
+                                    current["answer"], current["target_lang"]
+                                )
+                                synonyms_lower = [s.lower() for s in synonyms]
+                                if user_ans.strip().lower() in synonyms_lower:
+                                    is_correct = True
+                                    st.success(
+                                        f"Correct! The primary answer is '{current['answer']}', but you used a valid synonym."
+                                    )
+
+                        if is_correct:
+                            if f"scored_{idx}" not in st.session_state:
+                                st.session_state["quiz_score"] += 1
+                                st.session_state[f"scored_{idx}"] = True
+                            if (
+                                user_ans.strip().lower()
+                                == current["answer"].strip().lower()
+                            ):
+                                st.success(f"Correct. Answer: {current['answer']}")
+                        else:
+                            st.error(f"Incorrect. Answer: {current['answer']}")
+                            with st.spinner("Checking DB for alternatives..."):
+                                alts = get_semantic_alternatives(
+                                    current["answer"], current["target_lang"]
+                                )
+                                if alts:
+                                    st.info(
+                                        f"💡 Valid alternatives found in DB: {', '.join(alts)}"
+                                    )
+
+                        st.audio(text_to_speech(current["answer"]), format="audio/mpeg")
+
+                        if idx + 1 < len(questions):
+                            if st.button("Next Question", use_container_width=True):
+                                st.session_state["quiz_current_index"] += 1
+                                st.session_state["quiz_submitted"] = False
+                                st.rerun()
+                        else:
+                            if st.button("Finish Quiz", use_container_width=True):
+                                st.session_state["quiz_active"] = False
+                                st.session_state["quiz_finished_final"] = True
+                                st.rerun()
+                st.divider()
+                if st.button("Exit Quiz", type="secondary", use_container_width=True):
+                    st.session_state["quiz_active"] = False
+                    st.rerun()
+
+        elif st.session_state.get("quiz_finished_final", False):
+            st.header("Results")
+            st.balloons()
+            st.metric(
+                "Final Score",
+                f"{st.session_state['quiz_score']} / {len(st.session_state['quiz_questions'])}",
+            )
+            if st.button("Return to Menu", use_container_width=True):
+                st.session_state["quiz_finished_final"] = False
                 st.session_state["quiz_active"] = False
+                for key in list(st.session_state.keys()):
+                    if key.startswith("scored_"):
+                        del st.session_state[key]
                 st.rerun()
 
-    elif st.session_state.get("quiz_finished_final", False):
-        st.header("Results")
-        st.balloons()
-        st.metric(
-            "Final Score",
-            f"{st.session_state['quiz_score']} / {len(st.session_state['quiz_questions'])}",
-        )
-        if st.button("Return to Menu", use_container_width=True):
-            st.session_state["quiz_finished_final"] = False
-            st.session_state["quiz_active"] = False
-            for key in list(st.session_state.keys()):
-                if key.startswith("scored_"):
-                    del st.session_state[key]
-            st.rerun()
+    # --- GRAMMAR SUB-TAB ---
+    with grammar_tab:
+        g_active = st.session_state.get("grammar_quiz_active", False)
+        g_finished = st.session_state.get("grammar_quiz_finished", False)
+        o_active = st.session_state.get("ortho_quiz_active", False)
+        o_finished = st.session_state.get("ortho_quiz_finished", False)
 
-# 6. Grammar & Orthography Quiz (COMBINED)
-with grammar_ortho_tab:
-    st.header("Grammar & Orthography")
-
-    g_active = st.session_state.get("grammar_quiz_active", False)
-    g_finished = st.session_state.get("grammar_quiz_finished", False)
-    o_active = st.session_state.get("ortho_quiz_active", False)
-    o_finished = st.session_state.get("ortho_quiz_finished", False)
-
-    # 1. SETTINGS STATE
-    if not g_active and not g_finished and not o_active and not o_finished:
-        st.subheader("Settings")
-        quiz_type = st.radio(
-            "Select Quiz Type", ["Grammar Context", "Orthography"], horizontal=True
-        )
-        st.divider()
-
-        if quiz_type == "Grammar Context":
-            g_lang = st.selectbox("Select Language", LANGUAGES_INPUT, key="g_lang_sel")
-            client = get_qdrant_client()
-            points_count = client.count(
-                collection_name="corrections",
-                count_filter=models.Filter(
-                    must=[
-                        models.FieldCondition(
-                            key="Input_Language", match=models.MatchValue(value=g_lang)
-                        )
-                    ]
-                ),
-                exact=True,
-            ).count
-
-            c_mode, c_stat = st.columns([0.6, 0.4])
-            with c_mode:
-                # --- BEZ FLASHCARDS DLA GRAMMAR ---
-                grammar_interaction = st.radio(
-                    "Input Type",
-                    ["Multiple Choice", "Written Answer"],
-                    horizontal=True,
-                    key="gm_radio",
-                )
-            with c_stat:
-                st.write("")
-                color = "#4CAF50" if points_count >= 3 else "#FFC107"
-                bg = (
-                    "rgba(76, 175, 80, 0.1)"
-                    if points_count >= 3
-                    else "rgba(255, 193, 7, 0.1)"
-                )
-                text = (
-                    f"Found {points_count} items."
-                    if points_count >= 3
-                    else f"Not enough ({points_count}). Need 3+."
-                )
-                st.markdown(
-                    f"<div style='background-color: {bg}; color: {color}; padding: 8px 15px; border-radius: 5px; border: 1px solid {color}; text-align: center; margin-top: 27px; font-weight: bold;'>{text}</div>",
-                    unsafe_allow_html=True,
-                )
-
-            if points_count >= 3:
-                num_q = st.slider(
-                    "Questions",
-                    1,
-                    min(points_count, 10),
-                    min(points_count, 5),
-                    key="g_slider",
-                )
-                if st.button("Start Grammar Quiz", use_container_width=True):
-                    st.session_state["grammar_quiz_questions"] = []
-                    st.session_state["grammar_interaction_saved"] = grammar_interaction
-                    st.session_state["go_flashcard_revealed"] = False
-                    st.session_state["go_flashcard_score"] = 0
-
-                    with st.spinner("Generating grammar questions using AI..."):
-                        questions = generate_grammar_quiz_questions(g_lang, num_q)
-                        if questions:
-                            st.session_state["grammar_quiz_questions"] = questions
-                            st.session_state["grammar_quiz_index"] = 0
-                            st.session_state["grammar_quiz_score"] = 0
-                            st.session_state["grammar_quiz_active"] = True
-                            st.session_state["grammar_quiz_submitted"] = False
-                            st.rerun()
-                        else:
-                            st.error("Failed to generate questions.")
-
-        else:  # Orthography
-            o_lang = st.selectbox(
-                "Select Language",
-                LANGUAGES_INPUT,
-                index=(
-                    LANGUAGES_INPUT.index("Polish")
-                    if "Polish" in LANGUAGES_INPUT
-                    else 0
-                ),
-                key="o_lang_sel",
+        # 1. SETTINGS STATE
+        if not g_active and not g_finished and not o_active and not o_finished:
+            st.subheader("Settings")
+            quiz_type = st.radio(
+                "Select Quiz Type", ["Grammar Context", "Orthography"], horizontal=True
             )
+            st.divider()
 
-            client = get_qdrant_client()
-            if "temp_ortho_mode" not in st.session_state:
-                st.session_state["temp_ortho_mode"] = "Sentences"
-
-            c_mode, c_type, c_stat = st.columns([0.3, 0.3, 0.4])
-            with c_mode:
-                ortho_mode = st.radio(
-                    "Content",
-                    ["Sentences", "Single Words"],
-                    horizontal=True,
-                    key="om_radio",
+            if quiz_type == "Grammar Context":
+                g_lang = st.selectbox(
+                    "Select Language", LANGUAGES_INPUT, key="g_lang_sel"
                 )
-            with c_type:
-                # --- FLASHCARDS DOSTĘPNE DLA ORTOGRAFII ---
-                if ortho_mode == "Single Words":
-                    interaction_opts = [
-                        "Multiple Choice",
-                        "Written Answer",
-                        "Flashcards",
-                    ]
-                else:
-                    interaction_opts = ["Multiple Choice", "Written Answer"]
-                ortho_interaction = st.radio(
-                    "Input Type", interaction_opts, horizontal=True, key="oi_radio"
-                )
+                client = get_qdrant_client()
+                points_count = client.count(
+                    collection_name="corrections",
+                    count_filter=models.Filter(
+                        must=[
+                            models.FieldCondition(
+                                key="Input_Language",
+                                match=models.MatchValue(value=g_lang),
+                            )
+                        ]
+                    ),
+                    exact=True,
+                ).count
 
-            coll_name = "corrections" if ortho_mode == "Sentences" else "translations"
-            key_field = (
-                "Input_Language" if ortho_mode == "Sentences" else "Input_Text_Language"
-            )
-
-            points_count_o = client.count(
-                collection_name=coll_name,
-                count_filter=models.Filter(
-                    must=[
-                        models.FieldCondition(
-                            key=key_field, match=models.MatchValue(value=o_lang)
-                        )
-                    ]
-                ),
-                exact=True,
-            ).count
-
-            with c_stat:
-                st.write("")
-                color = "#4CAF50" if points_count_o >= 3 else "#FFC107"
-                bg = (
-                    "rgba(76, 175, 80, 0.1)"
-                    if points_count_o >= 3
-                    else "rgba(255, 193, 7, 0.1)"
-                )
-                text = (
-                    f"Found {points_count_o} items."
-                    if points_count_o >= 3
-                    else f"Not enough ({points_count_o}). Need 3+."
-                )
-                st.markdown(
-                    f"<div style='background-color: {bg}; color: {color}; padding: 8px 15px; border-radius: 5px; border: 1px solid {color}; text-align: center; margin-top: 27px; font-weight: bold;'>{text}</div>",
-                    unsafe_allow_html=True,
-                )
-
-            if points_count_o >= 3:
-                num_o = st.slider(
-                    "Questions",
-                    1,
-                    min(points_count_o, 10),
-                    min(points_count_o, 5),
-                    key="o_slider",
-                )
-
-                if st.button("Start Orthography Quiz", use_container_width=True):
-                    st.session_state["ortho_quiz_questions"] = []
-                    st.session_state["ortho_mode_saved"] = ortho_mode
-                    st.session_state["ortho_interaction_saved"] = ortho_interaction
-                    st.session_state["go_flashcard_revealed"] = False
-                    st.session_state["go_flashcard_score"] = 0
-
-                    with st.spinner(
-                        f"Generating tricky spelling questions from your {coll_name}..."
-                    ):
-                        questions = generate_orthography_questions(
-                            o_lang, num_o, ortho_mode
-                        )
-                        if questions:
-                            st.session_state["ortho_quiz_questions"] = questions
-                            st.session_state["ortho_quiz_index"] = 0
-                            st.session_state["ortho_quiz_score"] = 0
-                            st.session_state["ortho_quiz_active"] = True
-                            st.session_state["ortho_quiz_submitted"] = False
-                            st.rerun()
-                        else:
-                            st.error("Failed to generate.")
-
-    # 2. GRAMMAR ACTIVE
-    elif g_active:
-        idx = st.session_state["grammar_quiz_index"]
-        questions = st.session_state["grammar_quiz_questions"]
-        current = questions[idx]
-        interaction_mode = st.session_state.get(
-            "grammar_interaction_saved", "Multiple Choice"
-        )
-
-        st.write(f"Grammar Question {idx + 1} of {len(questions)}")
-        st.progress((idx) / len(questions))
-
-        # --- STANDARD LOGIC (ONLY) ---
-        with st.container(border=True):
-            context_clue = current.get("context_clue", "No clue available")
-            st.info(f"ℹ️ **Grammatical Clue:** {context_clue}")
-            st.markdown(f"### {current['question']}")
-
-            if interaction_mode == "Written Answer":
-                user_ans = st.text_input(
-                    "Type the missing word:",
-                    key=f"g_input_{idx}",
-                    disabled=st.session_state["grammar_quiz_submitted"],
-                )
-            else:
-                user_ans = st.radio(
-                    "Choose the missing word:",
-                    current["options"],
-                    key=f"g_radio_{idx}",
-                    disabled=st.session_state["grammar_quiz_submitted"],
-                )
-
-            if not st.session_state["grammar_quiz_submitted"]:
-                if st.button("Check", use_container_width=True):
-                    st.session_state["grammar_quiz_submitted"] = True
-                    st.rerun()
-            else:
-                is_correct = False
-                if interaction_mode == "Written Answer":
-                    if user_ans.strip().lower() == current["answer"].strip().lower():
-                        is_correct = True
-                else:
-                    if user_ans == current["answer"]:
-                        is_correct = True
-
-                if is_correct:
-                    st.success(f"Correct! The word was **{current['answer']}**.")
-                    if f"g_scored_{idx}" not in st.session_state:
-                        st.session_state["grammar_quiz_score"] += 1
-                        st.session_state[f"g_scored_{idx}"] = True
-                else:
-                    st.error(
-                        f"Incorrect. The correct word was **{current['answer']}**."
+                c_mode, c_stat = st.columns([0.6, 0.4])
+                with c_mode:
+                    grammar_interaction = st.radio(
+                        "Input Type",
+                        ["Multiple Choice", "Written Answer"],
+                        horizontal=True,
+                        key="gm_radio",
+                    )
+                with c_stat:
+                    st.write("")
+                    color = "#4CAF50" if points_count >= 3 else "#FFC107"
+                    bg = (
+                        "rgba(76, 175, 80, 0.1)"
+                        if points_count >= 3
+                        else "rgba(255, 193, 7, 0.1)"
+                    )
+                    text = (
+                        f"Found {points_count} items."
+                        if points_count >= 3
+                        else f"Not enough ({points_count}). Need 3+."
+                    )
+                    st.markdown(
+                        f"<div style='background-color: {bg}; color: {color}; padding: 8px 15px; border-radius: 5px; border: 1px solid {color}; text-align: center; margin-top: 27px; font-weight: bold;'>{text}</div>",
+                        unsafe_allow_html=True,
                     )
 
-                with st.expander("Why? (Context & Explanation)"):
-                    st.write(f"**Original Mistake:** {current['original_wrong']}")
-                    st.info(current["explanation"])
+                if points_count >= 3:
+                    num_q = st.slider(
+                        "Questions",
+                        1,
+                        min(points_count, 10),
+                        min(points_count, 5),
+                        key="g_slider",
+                    )
+                    if st.button("Start Grammar Quiz", use_container_width=True):
+                        st.session_state["grammar_quiz_questions"] = []
+                        st.session_state["grammar_interaction_saved"] = (
+                            grammar_interaction
+                        )
+                        st.session_state["go_flashcard_revealed"] = False
+                        st.session_state["go_flashcard_score"] = 0
 
-                st.audio(
-                    text_to_speech(
-                        current["question"].replace("______", current["answer"])
+                        with st.spinner("Generating grammar questions using AI..."):
+                            questions = generate_grammar_quiz_questions(g_lang, num_q)
+                            if questions:
+                                st.session_state["grammar_quiz_questions"] = questions
+                                st.session_state["grammar_quiz_index"] = 0
+                                st.session_state["grammar_quiz_score"] = 0
+                                st.session_state["grammar_quiz_active"] = True
+                                st.session_state["grammar_quiz_submitted"] = False
+                                st.rerun()
+                            else:
+                                st.error("Failed to generate questions.")
+
+            else:  # Orthography
+                o_lang = st.selectbox(
+                    "Select Language",
+                    LANGUAGES_INPUT,
+                    index=(
+                        LANGUAGES_INPUT.index("Polish")
+                        if "Polish" in LANGUAGES_INPUT
+                        else 0
                     ),
-                    format="audio/mpeg",
+                    key="o_lang_sel",
                 )
 
-                if idx + 1 < len(questions):
-                    if st.button("Next Question", use_container_width=True):
-                        st.session_state["grammar_quiz_index"] += 1
-                        st.session_state["grammar_quiz_submitted"] = False
-                        st.rerun()
-                else:
-                    if st.button("Finish Quiz", use_container_width=True):
-                        st.session_state["grammar_quiz_active"] = False
-                        st.session_state["grammar_quiz_finished"] = True
-                        st.rerun()
+                client = get_qdrant_client()
+                if "temp_ortho_mode" not in st.session_state:
+                    st.session_state["temp_ortho_mode"] = "Sentences"
 
-        st.divider()
-        if st.button("Exit Grammar Quiz", type="secondary", use_container_width=True):
-            st.session_state["grammar_quiz_active"] = False
-            st.rerun()
+                c_mode, c_type, c_stat = st.columns([0.3, 0.3, 0.4])
+                with c_mode:
+                    ortho_mode = st.radio(
+                        "Content",
+                        ["Sentences", "Single Words"],
+                        horizontal=True,
+                        key="om_radio",
+                    )
+                with c_type:
+                    # --- FLASHCARDS DOSTĘPNE TYLKO DLA SINGLE WORDS ---
+                    if ortho_mode == "Single Words":
+                        i_opts = ["Multiple Choice", "Written Answer", "Flashcards"]
+                    else:
+                        i_opts = ["Multiple Choice", "Written Answer"]
+                    ortho_interaction = st.radio(
+                        "Input Type", i_opts, horizontal=True, key="oi_radio"
+                    )
 
-    # 3. ORTHO ACTIVE
-    elif o_active:
-        idx = st.session_state["ortho_quiz_index"]
-        questions = st.session_state["ortho_quiz_questions"]
-        current = questions[idx]
-        interaction_mode = st.session_state.get(
-            "ortho_interaction_saved", "Multiple Choice"
-        )
+                coll_name = (
+                    "corrections" if ortho_mode == "Sentences" else "translations"
+                )
+                key_field = (
+                    "Input_Language"
+                    if ortho_mode == "Sentences"
+                    else "Input_Text_Language"
+                )
 
-        st.write(f"Orthography Question {idx + 1} of {len(questions)}")
-        st.progress((idx) / len(questions))
+                points_count_o = client.count(
+                    collection_name=coll_name,
+                    count_filter=models.Filter(
+                        must=[
+                            models.FieldCondition(
+                                key=key_field, match=models.MatchValue(value=o_lang)
+                            )
+                        ]
+                    ),
+                    exact=True,
+                ).count
 
-        # --- FLASHCARD LOGIC ---
-        if interaction_mode == "Flashcards":
+                with c_stat:
+                    st.write("")
+                    color = "#4CAF50" if points_count_o >= 3 else "#FFC107"
+                    bg = (
+                        "rgba(76, 175, 80, 0.1)"
+                        if points_count_o >= 3
+                        else "rgba(255, 193, 7, 0.1)"
+                    )
+                    text = (
+                        f"Found {points_count_o} items."
+                        if points_count_o >= 3
+                        else f"Not enough ({points_count_o}). Need 3+."
+                    )
+                    st.markdown(
+                        f"<div style='background-color: {bg}; color: {color}; padding: 8px 15px; border-radius: 5px; border: 1px solid {color}; text-align: center; margin-top: 27px; font-weight: bold;'>{text}</div>",
+                        unsafe_allow_html=True,
+                    )
+
+                if points_count_o >= 3:
+                    num_o = st.slider(
+                        "Questions",
+                        1,
+                        min(points_count_o, 10),
+                        min(points_count_o, 5),
+                        key="o_slider",
+                    )
+
+                    if st.button("Start Orthography Quiz", use_container_width=True):
+                        st.session_state["ortho_quiz_questions"] = []
+                        st.session_state["ortho_mode_saved"] = ortho_mode
+                        st.session_state["ortho_interaction_saved"] = ortho_interaction
+                        st.session_state["go_flashcard_revealed"] = False
+                        st.session_state["go_flashcard_score"] = 0
+
+                        with st.spinner(
+                            f"Generating tricky spelling questions from your {coll_name}..."
+                        ):
+                            questions = generate_orthography_questions(
+                                o_lang, num_o, ortho_mode
+                            )
+                            if questions:
+                                st.session_state["ortho_quiz_questions"] = questions
+                                st.session_state["ortho_quiz_index"] = 0
+                                st.session_state["ortho_quiz_score"] = 0
+                                st.session_state["ortho_quiz_active"] = True
+                                st.session_state["ortho_quiz_submitted"] = False
+                                st.rerun()
+                            else:
+                                st.error("Failed to generate.")
+
+        # 2. GRAMMAR ACTIVE
+        elif g_active:
+            idx = st.session_state["grammar_quiz_index"]
+            questions = st.session_state["grammar_quiz_questions"]
+            current = questions[idx]
+            interaction_mode = st.session_state.get(
+                "grammar_interaction_saved", "Multiple Choice"
+            )
+
+            st.write(f"Grammar Question {idx + 1} of {len(questions)}")
+            st.progress((idx) / len(questions))
+
             with st.container(border=True):
-                st.markdown(f"### {current['question']}")
-
-                if st.session_state["go_flashcard_revealed"]:
-                    st.divider()
-                    st.success(f"Correct Spelling: **{current['answer']}**")
-                    st.info(f"**Rule:** {current['explanation']}")
-                    if st.session_state.get("ortho_mode_saved") == "Sentences":
-                        st.audio(
-                            text_to_speech(
-                                current["question"].replace("______", current["answer"])
-                            ),
-                            format="audio/mpeg",
-                        )
-
-            if not st.session_state["go_flashcard_revealed"]:
-                if st.button("Reveal Answer", use_container_width=True):
-                    st.session_state["go_flashcard_revealed"] = True
-                    st.rerun()
-            else:
-                c_know, c_dontknow = st.columns(2)
-                with c_know:
-                    if st.button("✅ I knew it", use_container_width=True):
-                        st.session_state["go_flashcard_score"] += 1
-                        if idx < len(questions) - 1:
-                            st.session_state["ortho_quiz_index"] += 1
-                            st.session_state["go_flashcard_revealed"] = False
-                            st.rerun()
-                        else:
-                            st.session_state["ortho_quiz_score"] = st.session_state[
-                                "go_flashcard_score"
-                            ]
-                            st.session_state["ortho_quiz_active"] = False
-                            st.session_state["ortho_quiz_finished"] = True
-                            st.rerun()
-                with c_dontknow:
-                    if st.button("❌ Didn't know", use_container_width=True):
-                        if idx < len(questions) - 1:
-                            st.session_state["ortho_quiz_index"] += 1
-                            st.session_state["go_flashcard_revealed"] = False
-                            st.rerun()
-                        else:
-                            st.session_state["ortho_quiz_score"] = st.session_state[
-                                "go_flashcard_score"
-                            ]
-                            st.session_state["ortho_quiz_active"] = False
-                            st.session_state["ortho_quiz_finished"] = True
-                            st.rerun()
-
-        # --- STANDARD LOGIC ---
-        else:
-            with st.container(border=True):
+                context_clue = current.get("context_clue", "No clue available")
+                st.info(f"ℹ️ **Grammatical Clue:** {context_clue}")
                 st.markdown(f"### {current['question']}")
 
                 if interaction_mode == "Written Answer":
                     user_ans = st.text_input(
-                        "Type the correct word:",
-                        key=f"o_input_{idx}",
-                        disabled=st.session_state["ortho_quiz_submitted"],
+                        "Type the missing word:",
+                        key=f"g_input_{idx}",
+                        disabled=st.session_state["grammar_quiz_submitted"],
                     )
                 else:
                     user_ans = st.radio(
-                        "Choose correct spelling:",
+                        "Choose the missing word:",
                         current["options"],
-                        key=f"o_radio_{idx}",
-                        disabled=st.session_state["ortho_quiz_submitted"],
+                        key=f"g_radio_{idx}",
+                        disabled=st.session_state["grammar_quiz_submitted"],
                     )
 
-                if not st.session_state["ortho_quiz_submitted"]:
+                if not st.session_state["grammar_quiz_submitted"]:
                     if st.button("Check", use_container_width=True):
-                        st.session_state["ortho_quiz_submitted"] = True
+                        st.session_state["grammar_quiz_submitted"] = True
                         st.rerun()
                 else:
                     is_correct = False
@@ -1933,214 +1799,352 @@ with grammar_ortho_tab:
                             is_correct = True
 
                     if is_correct:
-                        st.success(f"Correct! **{current['answer']}**")
-                        if f"o_scored_{idx}" not in st.session_state:
-                            st.session_state["ortho_quiz_score"] += 1
-                            st.session_state[f"o_scored_{idx}"] = True
+                        st.success(f"Correct! The word was **{current['answer']}**.")
+                        if f"g_scored_{idx}" not in st.session_state:
+                            st.session_state["grammar_quiz_score"] += 1
+                            st.session_state[f"g_scored_{idx}"] = True
                     else:
                         st.error(
-                            f"Incorrect. The correct spelling is **{current['answer']}**."
+                            f"Incorrect. The correct word was **{current['answer']}**."
                         )
 
-                    st.info(f"**Rule:** {current['explanation']}")
+                    with st.expander("Why? (Context & Explanation)"):
+                        st.write(f"**Original Mistake:** {current['original_wrong']}")
+                        st.info(current["explanation"])
 
-                    if st.session_state.get("ortho_mode_saved") == "Sentences":
-                        st.audio(
-                            text_to_speech(
-                                current["question"].replace("______", current["answer"])
-                            ),
-                            format="audio/mpeg",
-                        )
+                    st.audio(
+                        text_to_speech(
+                            current["question"].replace("______", current["answer"])
+                        ),
+                        format="audio/mpeg",
+                    )
 
                     if idx + 1 < len(questions):
                         if st.button("Next Question", use_container_width=True):
-                            st.session_state["ortho_quiz_index"] += 1
-                            st.session_state["ortho_quiz_submitted"] = False
+                            st.session_state["grammar_quiz_index"] += 1
+                            st.session_state["grammar_quiz_submitted"] = False
                             st.rerun()
                     else:
                         if st.button("Finish Quiz", use_container_width=True):
-                            st.session_state["ortho_quiz_active"] = False
-                            st.session_state["ortho_quiz_finished"] = True
+                            st.session_state["grammar_quiz_active"] = False
+                            st.session_state["grammar_quiz_finished"] = True
                             st.rerun()
 
-        st.divider()
-        if st.button("Exit Quiz", type="secondary", use_container_width=True):
-            st.session_state["ortho_quiz_active"] = False
-            st.rerun()
+            st.divider()
+            if st.button(
+                "Exit Grammar Quiz", type="secondary", use_container_width=True
+            ):
+                st.session_state["grammar_quiz_active"] = False
+                st.rerun()
 
-    # 4. RESULTS
-    elif g_finished or o_finished:
-        st.header("Quiz Results")
-        st.balloons()
-        score = (
-            st.session_state.get("grammar_quiz_score", 0)
-            if g_finished
-            else st.session_state.get("ortho_quiz_score", 0)
-        )
-        total = (
-            len(st.session_state.get("grammar_quiz_questions", []))
-            if g_finished
-            else len(st.session_state.get("ortho_quiz_questions", []))
-        )
+        # 3. ORTHO ACTIVE
+        elif o_active:
+            idx = st.session_state["ortho_quiz_index"]
+            questions = st.session_state["ortho_quiz_questions"]
+            current = questions[idx]
+            interaction_mode = st.session_state.get(
+                "ortho_interaction_saved", "Multiple Choice"
+            )
 
-        st.metric("Final Score", f"{score} / {total}")
+            st.write(f"Orthography Question {idx + 1} of {len(questions)}")
+            st.progress((idx) / len(questions))
 
-        if st.button("Return to Menu", use_container_width=True):
-            st.session_state["grammar_quiz_finished"] = False
-            st.session_state["grammar_quiz_active"] = False
-            st.session_state["ortho_quiz_finished"] = False
-            st.session_state["ortho_quiz_active"] = False
-            for key in list(st.session_state.keys()):
-                if key.startswith("g_scored_") or key.startswith("o_scored_"):
-                    del st.session_state[key]
-            st.rerun()
+            # --- FLASHCARD LOGIC ---
+            if interaction_mode == "Flashcards":
+                with st.container(border=True):
+                    st.markdown(f"### {current['question']}")
+
+                    if st.session_state["go_flashcard_revealed"]:
+                        st.divider()
+                        st.success(f"Correct Spelling: **{current['answer']}**")
+                        st.info(f"**Rule:** {current['explanation']}")
+
+                if not st.session_state["go_flashcard_revealed"]:
+                    if st.button("Reveal Answer", use_container_width=True):
+                        st.session_state["go_flashcard_revealed"] = True
+                        st.rerun()
+                else:
+                    c_know, c_dontknow = st.columns(2)
+                    with c_know:
+                        if st.button("✅ I knew it", use_container_width=True):
+                            st.session_state["go_flashcard_score"] += 1
+                            if idx < len(questions) - 1:
+                                st.session_state["ortho_quiz_index"] += 1
+                                st.session_state["go_flashcard_revealed"] = False
+                                st.rerun()
+                            else:
+                                st.session_state["ortho_quiz_score"] = st.session_state[
+                                    "go_flashcard_score"
+                                ]
+                                st.session_state["ortho_quiz_active"] = False
+                                st.session_state["ortho_quiz_finished"] = True
+                                st.rerun()
+                    with c_dontknow:
+                        if st.button("❌ Didn't know", use_container_width=True):
+                            if idx < len(questions) - 1:
+                                st.session_state["ortho_quiz_index"] += 1
+                                st.session_state["go_flashcard_revealed"] = False
+                                st.rerun()
+                            else:
+                                st.session_state["ortho_quiz_score"] = st.session_state[
+                                    "go_flashcard_score"
+                                ]
+                                st.session_state["ortho_quiz_active"] = False
+                                st.session_state["ortho_quiz_finished"] = True
+                                st.rerun()
+
+            # --- STANDARD LOGIC ---
+            else:
+                with st.container(border=True):
+                    st.markdown(f"### {current['question']}")
+
+                    if interaction_mode == "Written Answer":
+                        user_ans = st.text_input(
+                            "Type the correct word:",
+                            key=f"o_input_{idx}",
+                            disabled=st.session_state["ortho_quiz_submitted"],
+                        )
+                    else:
+                        user_ans = st.radio(
+                            "Choose correct spelling:",
+                            current["options"],
+                            key=f"o_radio_{idx}",
+                            disabled=st.session_state["ortho_quiz_submitted"],
+                        )
+
+                    if not st.session_state["ortho_quiz_submitted"]:
+                        if st.button("Check", use_container_width=True):
+                            st.session_state["ortho_quiz_submitted"] = True
+                            st.rerun()
+                    else:
+                        is_correct = False
+                        if interaction_mode == "Written Answer":
+                            if (
+                                user_ans.strip().lower()
+                                == current["answer"].strip().lower()
+                            ):
+                                is_correct = True
+                        else:
+                            if user_ans == current["answer"]:
+                                is_correct = True
+
+                        if is_correct:
+                            st.success(f"Correct! **{current['answer']}**")
+                            if f"o_scored_{idx}" not in st.session_state:
+                                st.session_state["ortho_quiz_score"] += 1
+                                st.session_state[f"o_scored_{idx}"] = True
+                        else:
+                            st.error(
+                                f"Incorrect. The correct spelling is **{current['answer']}**."
+                            )
+
+                        st.info(f"**Rule:** {current['explanation']}")
+
+                        if st.session_state.get("ortho_mode_saved") == "Sentences":
+                            st.audio(
+                                text_to_speech(
+                                    current["question"].replace(
+                                        "______", current["answer"]
+                                    )
+                                ),
+                                format="audio/mpeg",
+                            )
+
+                        if idx + 1 < len(questions):
+                            if st.button("Next Question", use_container_width=True):
+                                st.session_state["ortho_quiz_index"] += 1
+                                st.session_state["ortho_quiz_submitted"] = False
+                                st.rerun()
+                        else:
+                            if st.button("Finish Quiz", use_container_width=True):
+                                st.session_state["ortho_quiz_active"] = False
+                                st.session_state["ortho_quiz_finished"] = True
+                                st.rerun()
+
+            st.divider()
+            if st.button("Exit Quiz", type="secondary", use_container_width=True):
+                st.session_state["ortho_quiz_active"] = False
+                st.rerun()
+
+        # 4. RESULTS
+        elif g_finished or o_finished:
+            st.header("Quiz Results")
+            st.balloons()
+            score = (
+                st.session_state.get("grammar_quiz_score", 0)
+                if g_finished
+                else st.session_state.get("ortho_quiz_score", 0)
+            )
+            total = (
+                len(st.session_state.get("grammar_quiz_questions", []))
+                if g_finished
+                else len(st.session_state.get("ortho_quiz_questions", []))
+            )
+
+            st.metric("Final Score", f"{score} / {total}")
+
+            if st.button("Return to Menu", use_container_width=True):
+                st.session_state["grammar_quiz_finished"] = False
+                st.session_state["grammar_quiz_active"] = False
+                st.session_state["ortho_quiz_finished"] = False
+                st.session_state["ortho_quiz_active"] = False
+                for key in list(st.session_state.keys()):
+                    if key.startswith("g_scored_") or key.startswith("o_scored_"):
+                        del st.session_state[key]
+                st.rerun()
 
 # 7. Search Translation (Dynamic Layout + Score)
-with search_tr:
-    cur_mode = st.session_state.get("search_tr_mode", "None")
+with database_tab:
+    st.header("Your Knowledge Base")
 
-    if cur_mode == "None":
-        cols = st.columns([0.7, 0.3])
-    elif cur_mode == "Both":
-        cols = st.columns([0.4, 0.2, 0.2, 0.2])
-    else:
-        cols = st.columns([0.5, 0.25, 0.25])
+    tab_tr, tab_cor, tab_aud = st.tabs(["Translations", "Corrections", "Audio"])
 
-    with cols[0]:
-        query_tr = st.text_input(
-            "Translation Query",
-            key="search_tr_in",
-            label_visibility="collapsed",
-            placeholder="Enter text to search...",
+    with tab_tr:
+        cur_mode = st.session_state.get("search_tr_mode", "None")
+
+        if cur_mode == "None":
+            cols = st.columns([0.7, 0.3])
+        elif cur_mode == "Both":
+            cols = st.columns([0.4, 0.2, 0.2, 0.2])
+        else:
+            cols = st.columns([0.5, 0.25, 0.25])
+
+        with cols[0]:
+            query_tr = st.text_input(
+                "Translation Query",
+                key="search_tr_in",
+                label_visibility="collapsed",
+                placeholder="Enter text to search...",
+            )
+        with cols[1]:
+            filter_mode = st.selectbox(
+                "Filter By",
+                ["None", "Input Language", "Target Language", "Both"],
+                key="search_tr_mode",
+                label_visibility="collapsed",
+            )
+
+        f_in = f_out = None
+        if cur_mode == "Input Language":
+            with cols[2]:
+                f_in = st.selectbox(
+                    "In Lang",
+                    LANGUAGES_INPUT,
+                    key="dyn_in",
+                    label_visibility="collapsed",
+                )
+        elif cur_mode == "Target Language":
+            with cols[2]:
+                f_out = st.selectbox(
+                    "Out Lang",
+                    LANGUAGES_OUTPUT,
+                    key="dyn_out",
+                    label_visibility="collapsed",
+                )
+        elif cur_mode == "Both":
+            with cols[2]:
+                f_in = st.selectbox(
+                    "In Lang",
+                    LANGUAGES_INPUT,
+                    key="dyn_in_both",
+                    label_visibility="collapsed",
+                )
+            with cols[3]:
+                f_out = st.selectbox(
+                    "Out Lang",
+                    LANGUAGES_OUTPUT,
+                    key="dyn_out_both",
+                    label_visibility="collapsed",
+                )
+
+        if st.button(
+            "Search Translations", use_container_width=True, key="search_tr_btn"
+        ):
+            df = list_translations(query_tr, f_in, f_out)
+            st.session_state["cached_tr_results"] = df.to_dict("records")
+            if df.empty:
+                st.warning("No results found.")
+
+        if st.session_state.get("cached_tr_results"):
+            for idx, row in enumerate(st.session_state["cached_tr_results"]):
+                with st.container(border=True):
+                    badge = (
+                        f"<span class='similarity-badge'>Score: {row.get('Score')}</span>"
+                        if "Score" in row
+                        else ""
+                    )
+                    st.markdown(
+                        f"**{row['Input_Language']} &rarr; {row['Target_Language']}** {badge}",
+                        unsafe_allow_html=True,
+                    )
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        st.caption("Original")
+                        st.info(row.get("Input_Text"))
+                    with c2:
+                        st.caption("Translation")
+                        st.success(row.get("Translation"))
+
+    with tab_cor:
+        query_cor = st.text_input("Enter Correction Query", key="search_cor_in")
+        if st.button(
+            "Search Corrections", use_container_width=True, key="search_cor_btn"
+        ):
+            df = list_corrections(query_cor)
+            st.session_state["cached_cor_results"] = df.to_dict("records")
+            if df.empty:
+                st.warning("No results found.")
+
+        if st.session_state.get("cached_cor_results"):
+            for idx, row in enumerate(st.session_state["cached_cor_results"]):
+                with st.container(border=True):
+                    badge = (
+                        f"<span class='similarity-badge'>Score: {row.get('Score')}</span>"
+                        if "Score" in row
+                        else ""
+                    )
+                    st.markdown(
+                        f"**{row['Input_Language']}** {badge}", unsafe_allow_html=True
+                    )
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        st.markdown("**Original:**")
+                        st.error(row.get("Input_Text"))
+                    with c2:
+                        st.markdown("**Corrected:**")
+                        st.success(row.get("Correction"))
+
+                    with st.expander("Explanations"):
+                        st.write(row.get("Difficult_Words"))
+                        st.divider()
+                        st.write(row.get("Grammar_Rules"))
+
+    with tab_aud:
+        query_audio = st.text_input(
+            "Enter Audio Transcription Query", key="search_audio_in"
         )
-    with cols[1]:
-        filter_mode = st.selectbox(
-            "Filter By",
-            ["None", "Input Language", "Target Language", "Both"],
-            key="search_tr_mode",
-            label_visibility="collapsed",
-        )
+        if st.button("Search Audio", use_container_width=True, key="search_audio_btn"):
+            df = list_audio_translations(query_audio)
+            st.session_state["cached_audio_results"] = df.to_dict("records")
+            if df.empty:
+                st.warning("No results found.")
 
-    f_in = f_out = None
-    if cur_mode == "Input Language":
-        with cols[2]:
-            f_in = st.selectbox(
-                "In Lang", LANGUAGES_INPUT, key="dyn_in", label_visibility="collapsed"
-            )
-    elif cur_mode == "Target Language":
-        with cols[2]:
-            f_out = st.selectbox(
-                "Out Lang",
-                LANGUAGES_OUTPUT,
-                key="dyn_out",
-                label_visibility="collapsed",
-            )
-    elif cur_mode == "Both":
-        with cols[2]:
-            f_in = st.selectbox(
-                "In Lang",
-                LANGUAGES_INPUT,
-                key="dyn_in_both",
-                label_visibility="collapsed",
-            )
-        with cols[3]:
-            f_out = st.selectbox(
-                "Out Lang",
-                LANGUAGES_OUTPUT,
-                key="dyn_out_both",
-                label_visibility="collapsed",
-            )
-
-    if st.button("Search", use_container_width=True, key="search_tr_btn"):
-        df = list_translations(query_tr, f_in, f_out)
-        st.session_state["cached_tr_results"] = df.to_dict("records")
-        if df.empty:
-            st.warning("No results found.")
-
-    if st.session_state.get("cached_tr_results"):
-        st.header("Saved Translations")
-        for idx, row in enumerate(st.session_state["cached_tr_results"]):
-            with st.container(border=True):
-                # Badge z wynikiem
-                badge = (
-                    f"<span class='similarity-badge'>Score: {row.get('Score')}</span>"
-                    if "Score" in row
-                    else ""
-                )
-                st.markdown(
-                    f"**{row['Input_Language']} &rarr; {row['Target_Language']}** {badge}",
-                    unsafe_allow_html=True,
-                )
-                c1, c2 = st.columns(2)
-                with c1:
-                    st.caption("Original")
-                    st.info(row.get("Input_Text"))
-                with c2:
-                    st.caption("Translation")
-                    st.success(row.get("Translation"))
-
-# 8. Search Corrections
-with search_cor:
-    query_cor = st.text_input("Enter Correction Query", key="search_cor_in")
-    if st.button("Search", use_container_width=True, key="search_cor_btn"):
-        df = list_corrections(query_cor)
-        st.session_state["cached_cor_results"] = df.to_dict("records")
-        if df.empty:
-            st.warning("No results found.")
-
-    if st.session_state.get("cached_cor_results"):
-        st.header("Saved Corrections")
-        for idx, row in enumerate(st.session_state["cached_cor_results"]):
-            with st.container(border=True):
-                badge = (
-                    f"<span class='similarity-badge'>Score: {row.get('Score')}</span>"
-                    if "Score" in row
-                    else ""
-                )
-                st.markdown(
-                    f"**{row['Input_Language']}** {badge}", unsafe_allow_html=True
-                )
-                c1, c2 = st.columns(2)
-                with c1:
-                    st.markdown("**Original:**")
-                    st.error(row.get("Input_Text"))
-                with c2:
-                    st.markdown("**Corrected:**")
-                    st.success(row.get("Correction"))
-
-                with st.expander("Explanations"):
-                    st.write(row.get("Difficult_Words"))
-                    st.divider()
-                    st.write(row.get("Grammar_Rules"))
-
-# 9. Search Audio
-with search_aud:
-    query_audio = st.text_input(
-        "Enter Audio Transcription Query", key="search_audio_in"
-    )
-    if st.button("Search", use_container_width=True, key="search_audio_btn"):
-        df = list_audio_translations(query_audio)
-        st.session_state["cached_audio_results"] = df.to_dict("records")
-        if df.empty:
-            st.warning("No results found.")
-
-    if st.session_state.get("cached_audio_results"):
-        st.header("Saved Audio Translations")
-        for idx, row in enumerate(st.session_state["cached_audio_results"]):
-            with st.container(border=True):
-                badge = (
-                    f"<span class='similarity-badge'>Score: {row.get('Score')}</span>"
-                    if "Score" in row
-                    else ""
-                )
-                st.markdown(
-                    f"**{row['Input_Language']} (Audio)** {badge}",
-                    unsafe_allow_html=True,
-                )
-                c1, c2 = st.columns(2)
-                with c1:
-                    st.markdown("**Transcription:**")
-                    st.info(row.get("Transcription"))
-                with c2:
-                    st.markdown("**Translation:**")
-                    st.success(row.get("Translation"))
+        if st.session_state.get("cached_audio_results"):
+            for idx, row in enumerate(st.session_state["cached_audio_results"]):
+                with st.container(border=True):
+                    badge = (
+                        f"<span class='similarity-badge'>Score: {row.get('Score')}</span>"
+                        if "Score" in row
+                        else ""
+                    )
+                    st.markdown(
+                        f"**{row['Input_Language']} (Audio)** {badge}",
+                        unsafe_allow_html=True,
+                    )
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        st.markdown("**Transcription:**")
+                        st.info(row.get("Transcription"))
+                    with c2:
+                        st.markdown("**Translation:**")
+                        st.success(row.get("Translation"))
