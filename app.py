@@ -1617,7 +1617,7 @@ with main_quiz_tab:
                                 st.session_state["quiz_finished_final"] = True
                                 st.rerun()
                 st.divider()
-                if st.button("Exit Quiz", type="secondary", use_container_width=True):
+                if st.button("Exit", type="secondary", use_container_width=True):
                     st.session_state["quiz_active"] = False
                     st.rerun()
 
@@ -1687,17 +1687,17 @@ with main_quiz_tab:
                         st.audio(text_to_speech(current["answer"]), format="audio/mpeg")
 
                         if idx + 1 < len(questions):
-                            if st.button("Next Question", use_container_width=True):
+                            if st.button("Next  ", use_container_width=True):
                                 st.session_state["quiz_current_index"] += 1
                                 st.session_state["quiz_submitted"] = False
                                 st.rerun()
                         else:
-                            if st.button("Finish Quiz", use_container_width=True):
+                            if st.button("Finish", use_container_width=True):
                                 st.session_state["quiz_active"] = False
                                 st.session_state["quiz_finished_final"] = True
                                 st.rerun()
                 st.divider()
-                if st.button("Exit Quiz", type="secondary", use_container_width=True):
+                if st.button("Exit ", type="secondary", use_container_width=True):
                     st.session_state["quiz_active"] = False
                     st.rerun()
 
@@ -1975,7 +1975,7 @@ with main_quiz_tab:
                     )
 
                     if idx + 1 < len(questions):
-                        if st.button("Next Question", use_container_width=True):
+                        if st.button("Next", use_container_width=True):
                             st.session_state["grammar_quiz_index"] += 1
                             st.session_state["grammar_quiz_submitted"] = False
                             st.rerun()
@@ -1986,9 +1986,7 @@ with main_quiz_tab:
                             st.rerun()
 
             st.divider()
-            if st.button(
-                "Exit Grammar Quiz", type="secondary", use_container_width=True
-            ):
+            if st.button("Exit  ", type="secondary", use_container_width=True):
                 st.session_state["grammar_quiz_active"] = False
                 st.rerun()
 
@@ -2104,18 +2102,18 @@ with main_quiz_tab:
                             )
 
                         if idx + 1 < len(questions):
-                            if st.button("Next Question", use_container_width=True):
+                            if st.button("Next ", use_container_width=True):
                                 st.session_state["ortho_quiz_index"] += 1
                                 st.session_state["ortho_quiz_submitted"] = False
                                 st.rerun()
                         else:
-                            if st.button("Finish Quiz", use_container_width=True):
+                            if st.button("Finish   ", use_container_width=True):
                                 st.session_state["ortho_quiz_active"] = False
                                 st.session_state["ortho_quiz_finished"] = True
                                 st.rerun()
 
             st.divider()
-            if st.button("Exit Quiz", type="secondary", use_container_width=True):
+            if st.button("Exit    ", type="secondary", use_container_width=True):
                 st.session_state["ortho_quiz_active"] = False
                 st.rerun()
 
